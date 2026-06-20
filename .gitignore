@@ -11,3 +11,8 @@ wheels/
 
 # Secrets
 .env
+
+# Local database
+*.db
+*.db-journal
+*.db-wal
