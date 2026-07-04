@@ -19,10 +19,14 @@ import db
 SCHEMA_DOC = """\
 entries  -- one row per memory (note, expense, link, ...)
   id           INTEGER PRIMARY KEY (auto)
-  created_at   TEXT   -- ISO timestamp; set to the current time
+  created_at   TEXT   -- recording time. ALWAYS set this to the SQL expression
+                      --   strftime('%Y-%m-%dT%H:%M:%SZ','now') (unquoted) so the
+                      --   database fills the real current UTC time
   type         TEXT   -- 'note' | 'expense' | 'link' | ... (free-form)
   raw_text     TEXT   -- the user's words / a short description
-  occurred_at  TEXT   -- date the event happened, 'YYYY-MM-DD' (default: today)
+  occurred_at  TEXT   -- when the event happened: a date 'YYYY-MM-DD' (default
+                      --   today), OR a full 'YYYY-MM-DDTHH:MM:SS' timestamp if
+                      --   the user mentions a time
   amount       REAL   -- expenses: numeric amount (else NULL)
   currency     TEXT   -- expenses: e.g. 'INR' (else NULL)
   category     TEXT   -- expenses: e.g. 'food', 'subscription' (else NULL)

@@ -17,7 +17,8 @@ DEFAULT_DB_PATH = "brain.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at  TEXT NOT NULL,   -- when we recorded it (UTC, ISO-8601)
+    -- when we recorded it; auto-stamped with the real UTC time if omitted
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     type        TEXT NOT NULL,   -- 'note', 'expense', ... (free-form)
     raw_text    TEXT NOT NULL,   -- exactly what the user said
     occurred_at TEXT,            -- date the event happened (YYYY-MM-DD)
@@ -85,7 +86,7 @@ def add_entry(
     """
     if occurred_at is None:
         occurred_at = date.today().isoformat()
-    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     extra_json = json.dumps(extra) if extra is not None else None
 
     cur = conn.execute(

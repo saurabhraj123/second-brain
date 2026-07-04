@@ -5,6 +5,7 @@ description = "Second Brain — a personal AI memory for notes, events, and fina
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "gradio>=6.19.0",
     "openai-agents>=0.17.6",
 ]
 

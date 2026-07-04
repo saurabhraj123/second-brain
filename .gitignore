@@ -16,3 +16,6 @@ wheels/
 *.db
 *.db-journal
 *.db-wal
+
+# Personal standing instructions (agent-mutated)
+memory.md

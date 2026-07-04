@@ -6,7 +6,7 @@ that the future `run_query` tool will depend on.
 """
 
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -168,3 +168,35 @@ def test_one_tag_spans_multiple_types(conn):
     rows = db.get_entries(conn, tag="job-search")
     assert len(rows) == 3
     assert {r["type"] for r in rows} == {"note", "link", "expense"}
+
+
+# --- created_at captures the real recording time, not a guessed date ---
+
+
+def _assert_is_now(created_at, before, after):
+    ts = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    assert before - timedelta(seconds=2) <= ts <= after + timedelta(seconds=2)
+
+
+def test_insert_omitting_created_at_is_auto_timestamped(conn):
+    # This is what the storing agent does: omit created_at and let the
+    # database stamp the real time (not midnight).
+    before = datetime.now(timezone.utc)
+    conn.execute(
+        "INSERT INTO entries (type, raw_text, occurred_at) "
+        "VALUES ('note', 'time check', '2026-06-21')"
+    )
+    conn.commit()
+    after = datetime.now(timezone.utc)
+
+    _assert_is_now(db.get_entries(conn)[0]["created_at"], before, after)
+
+
+def test_add_entry_stamps_real_created_at_time(conn):
+    before = datetime.now(timezone.utc)
+    db.add_entry(conn, type="note", raw_text="hi")
+    after = datetime.now(timezone.utc)
+
+    _assert_is_now(db.get_entries(conn)[0]["created_at"], before, after)

@@ -1,0 +1,49 @@
+- generic [ref=e21]:
+  - main [ref=e22]:
+    - generic [ref=e23]:
+      - generic [ref=e27]:
+        - heading "🧠 Second Brain" [level=1] [ref=e28]
+        - paragraph [ref=e29]: Tell me something to remember, or ask about your memories.
+      - generic [ref=e30]:
+        - generic:
+          - generic: processing | 6.0s
+        - generic [ref=e31]:
+          - generic:
+            - generic:
+              - img
+            - text: Second Brain
+          - generic [ref=e52]:
+            - button [ref=e53] [cursor=pointer]:
+              - img [ref=e55]
+            - button "Clear" [ref=e57] [cursor=pointer]:
+              - img [ref=e59]
+            - button "Copy conversation" [ref=e65] [cursor=pointer]:
+              - img [ref=e67]
+          - log "chatbot conversation" [ref=e32]:
+            - generic [ref=e70]:
+              - 'generic "user''s message: where was I doing google dsa questions from today?" [ref=e75]':
+                - paragraph [ref=e78]: where was I doing google dsa questions from today?
+              - button "Copy message" [ref=e81] [cursor=pointer]:
+                - img [ref=e83]
+              - status "Loading response" [ref=e87]:
+                - generic [ref=e89]: Loading content
+      - generic [ref=e34]:
+        - generic [ref=e37]:
+          - generic [ref=e38]: Textbox
+          - textbox "Textbox" [active] [ref=e40]:
+            - /placeholder: e.g.  'paid 649 for Netflix today'   or   'how much did I spend on subscriptions?'
+        - button "Send" [ref=e41] [cursor=pointer]
+      - button "🗑 New chat" [ref=e42] [cursor=pointer]
+  - contentinfo "Gradio footer navigation" [ref=e43]:
+    - button "Use via API logo" [ref=e44] [cursor=pointer]:
+      - text: Use via API
+      - img "logo" [ref=e45]
+    - generic [ref=e46]: ·
+    - link "Built with Gradio logo" [ref=e47] [cursor=pointer]:
+      - /url: https://gradio.app
+      - text: Built with Gradio
+      - img "logo" [ref=e48]
+    - generic [ref=e49]: ·
+    - button "Settings Settings" [ref=e50] [cursor=pointer]:
+      - text: Settings
+      - img "Settings" [ref=e51]

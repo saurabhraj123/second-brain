@@ -1,0 +1,49 @@
+- generic [ref=e21]:
+  - main [ref=e22]:
+    - generic [ref=e23]:
+      - generic [ref=e27]:
+        - heading "🧠 Second Brain" [level=1] [ref=e28]
+        - paragraph [ref=e29]: Tell me something to remember, or ask about your memories.
+      - generic [ref=e30]:
+        - generic [ref=e52]:
+          - button "Clear" [ref=e54] [cursor=pointer]:
+            - img [ref=e56]
+          - generic [ref=e60]: Error
+        - generic [ref=e31]:
+          - generic:
+            - generic:
+              - img
+            - text: Second Brain
+          - generic [ref=e61]:
+            - button [ref=e62] [cursor=pointer]:
+              - img [ref=e64]
+            - button "Clear" [ref=e66] [cursor=pointer]:
+              - img [ref=e68]
+            - button "Copy conversation" [ref=e74] [cursor=pointer]:
+              - img [ref=e76]
+          - log "chatbot conversation" [ref=e32]:
+            - generic [ref=e79]:
+              - 'generic "user''s message: hi there" [ref=e84]':
+                - paragraph [ref=e87]: hi there
+              - button "Copy message" [ref=e90] [cursor=pointer]:
+                - img [ref=e92]
+      - generic [ref=e34]:
+        - generic [ref=e37]:
+          - generic [ref=e38]: Textbox
+          - textbox "Textbox" [active] [ref=e40]:
+            - /placeholder: e.g.  'paid 649 for Netflix today'   or   'how much did I spend on subscriptions?'
+        - button "Send" [ref=e41] [cursor=pointer]
+      - button "🗑 New chat" [ref=e42] [cursor=pointer]
+  - contentinfo "Gradio footer navigation" [ref=e43]:
+    - button "Use via API logo" [ref=e44] [cursor=pointer]:
+      - text: Use via API
+      - img "logo" [ref=e45]
+    - generic [ref=e46]: ·
+    - link "Built with Gradio logo" [ref=e47] [cursor=pointer]:
+      - /url: https://gradio.app
+      - text: Built with Gradio
+      - img "logo" [ref=e48]
+    - generic [ref=e49]: ·
+    - button "Settings Settings" [ref=e50] [cursor=pointer]:
+      - text: Settings
+      - img "Settings" [ref=e51]
