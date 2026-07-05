@@ -4,8 +4,15 @@ Everything the user tells us — a plain note ("went to school today") or an
 expense ("netflix, 649") — lands in ONE table, `entries`. The common-but-
 important fields (amount, currency, category, occurred_at, due_at) are real
 columns so finance queries stay clean SQL; anything type-specific goes in the
-JSON `extra` column. Adding a new *kind* of memory needs no schema change —
-just a new `type` string.
+JSON `payload` column.
+
+The `type` of an entry ('note', 'expense', 'link', ...) is drawn from a small
+controlled vocabulary held in the `types` table, and `entries.type` is a
+foreign key onto it. This keeps the vocabulary consistent — a typo'd type is
+rejected rather than silently fragmenting a dashboard's GROUP BY — while still
+letting the vocabulary GROW: the store agent may register a genuinely new type
+(and tells the user when it does). We seed the ones already in use; the rest
+grow on demand.
 """
 
 import json
@@ -14,19 +21,41 @@ from datetime import date, datetime, timezone
 
 DEFAULT_DB_PATH = "brain.db"
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS entries (
+# The types we always start with. The vocabulary can grow beyond these (the
+# store agent registers a new type when nothing fits), but `note` is the
+# catch-all every entry can safely fall back to.
+DEFAULT_TYPES = ("note", "expense", "link")
+
+# The `entries` column definitions, shared verbatim by the fresh-DB schema and
+# the migration's table rebuild so the two can never drift apart.
+_ENTRIES_COLUMNS = """\
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    -- when we recorded it; auto-stamped with the real UTC time if omitted
+    -- when we recorded it: a precise UTC instant, auto-stamped if omitted. This
+    -- is a timestamp, NOT a calendar day — do not filter "today" on it (it can
+    -- be a day off from the user's local date). Use occurred_at for that.
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    type        TEXT NOT NULL,   -- 'note', 'expense', ... (free-form)
+    type        TEXT NOT NULL REFERENCES types(name),  -- controlled vocabulary
     raw_text    TEXT NOT NULL,   -- exactly what the user said
-    occurred_at TEXT,            -- date the event happened (YYYY-MM-DD)
+    -- the calendar day the event belongs to, in the user's LOCAL date; this is
+    -- what "today"/"yesterday"/date queries filter on. Defaults to the local
+    -- day (NOT UTC) so day-based recall stays correct even if it's omitted.
+    occurred_at TEXT DEFAULT (date('now', 'localtime')),
     amount      REAL,            -- finance: how much
     currency    TEXT,            -- finance: e.g. 'INR'
     category    TEXT,            -- finance: e.g. 'subscription'
     due_at      TEXT,            -- reserved for the reminders phase
-    extra       TEXT             -- JSON blob for type-specific fields
+    payload     TEXT             -- JSON blob for type-specific fields
+"""
+
+SCHEMA = f"""
+-- The allowed entry types. `entries.type` is a foreign key onto this, so the
+-- set of types is a small controlled vocabulary rather than free-form text.
+CREATE TABLE IF NOT EXISTS types (
+    name TEXT PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS entries (
+{_ENTRIES_COLUMNS}
 );
 
 -- Tags are cross-cutting labels (e.g. 'job-search', 'google') that apply
@@ -48,22 +77,114 @@ CREATE TABLE IF NOT EXISTS entry_tags (
 def connect(path=DEFAULT_DB_PATH, *, readonly=False):
     """Open a connection. `readonly=True` physically blocks writes.
 
-    The read-only mode is how the future text-to-SQL `run_query` tool stays
-    safe — the model can SELECT freely but cannot mutate the database.
+    The read-only mode is how the text-to-SQL `query_db` tool stays safe — the
+    model can SELECT freely but cannot mutate the database.
     """
     if readonly:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     else:
         conn = sqlite3.connect(path)
-        conn.execute("PRAGMA foreign_keys = ON")  # honor entry_tags cascades
+        conn.execute("PRAGMA foreign_keys = ON")  # honor the FKs / cascades
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db(conn):
-    """Create the `entries` table if it does not already exist."""
+    """Create the schema (if missing) and migrate any old-shaped DB in place.
+
+    Safe to call on every run: it is idempotent on an already-current database.
+    """
+    # 1. Ensure the vocabulary table exists and the defaults are present. This
+    #    must come first because `entries.type` is a foreign key onto it.
+    conn.execute("CREATE TABLE IF NOT EXISTS types (name TEXT PRIMARY KEY)")
+    conn.executemany(
+        "INSERT OR IGNORE INTO types (name) VALUES (?)",
+        [(t,) for t in DEFAULT_TYPES],
+    )
+    conn.commit()
+
+    # 2. Upgrade a legacy `entries` table (had `extra`, free-form `type`, no FK).
+    _migrate_entries_if_needed(conn)
+
+    # 3. Create anything still missing (the fresh-database path).
     conn.executescript(SCHEMA)
     conn.commit()
+
+
+def _migrate_entries_if_needed(conn):
+    """Bring a legacy `entries` table up to the current schema, preserving data.
+
+    Old databases have an `extra` column and a free-form `type` with no foreign
+    key (and, in a later revision, no default on `occurred_at`). SQLite can't
+    add a foreign key or a column default with ALTER, so we rebuild the table:
+    register every existing type into `types` (so the new FK is satisfiable),
+    then copy every row into a fresh table with the current shape, mapping the
+    old `extra` column onto `payload`. Ids are preserved, so `entry_tags` links
+    stay valid. No-op once the table is already current.
+    """
+    info = {row["name"]: row for row in conn.execute("PRAGMA table_info(entries)")}
+    if not info:
+        return  # fresh database — nothing to migrate
+
+    has_payload = "payload" in info
+    has_type_fk = any(
+        fk["table"] == "types"
+        for fk in conn.execute("PRAGMA foreign_key_list(entries)")
+    )
+    occurred = info.get("occurred_at")
+    has_occurred_default = occurred is not None and occurred["dflt_value"] is not None
+    if has_payload and has_type_fk and has_occurred_default:
+        return  # already current
+
+    # Register every type already in use so the new foreign key is satisfiable.
+    conn.execute(
+        "INSERT OR IGNORE INTO types (name) SELECT DISTINCT type FROM entries"
+    )
+    conn.commit()
+
+    payload_src = "payload" if has_payload else "extra"
+    # Foreign keys must be OFF to DROP the referenced `entries` table; the
+    # pragma can't be toggled inside a transaction, so set it before the script.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript(
+        f"""
+        BEGIN;
+        CREATE TABLE entries_new (
+{_ENTRIES_COLUMNS}
+        );
+        INSERT INTO entries_new
+            (id, created_at, type, raw_text, occurred_at,
+             amount, currency, category, due_at, payload)
+        SELECT id, created_at, type, raw_text, occurred_at,
+               amount, currency, category, due_at, {payload_src}
+        FROM entries;
+        DROP TABLE entries;
+        ALTER TABLE entries_new RENAME TO entries;
+        COMMIT;
+        """
+    )
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def get_types(conn):
+    """Return the current type vocabulary, sorted."""
+    return [row["name"] for row in conn.execute("SELECT name FROM types ORDER BY name")]
+
+
+def get_tags(conn):
+    """Return the tags currently in use, most-used first (ties sorted by name).
+
+    Ordering by usage keeps the most relevant tags at the front, which matters
+    when the list is injected into an agent prompt.
+    """
+    return [
+        row["name"]
+        for row in conn.execute(
+            "SELECT t.name FROM tags t "
+            "LEFT JOIN entry_tags et ON et.tag_id = t.id "
+            "GROUP BY t.id ORDER BY COUNT(et.entry_id) DESC, t.name"
+        )
+    ]
 
 
 def add_entry(
@@ -76,28 +197,30 @@ def add_entry(
     currency=None,
     category=None,
     due_at=None,
-    extra=None,
+    payload=None,
     tags=None,
 ):
     """Insert one memory and return its new id.
 
-    `occurred_at` defaults to today; `extra` (a dict) is stored as JSON;
-    `tags` (a list of strings) are normalized, de-duplicated, and linked.
+    `occurred_at` defaults to today; `payload` (a dict) is stored as JSON;
+    `tags` (a list of strings) are normalized, de-duplicated, and linked. The
+    `type` is registered in the vocabulary first so the foreign key holds.
     """
     if occurred_at is None:
         occurred_at = date.today().isoformat()
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    extra_json = json.dumps(extra) if extra is not None else None
+    payload_json = json.dumps(payload) if payload is not None else None
 
+    _ensure_type(conn, type)
     cur = conn.execute(
         """
         INSERT INTO entries
             (created_at, type, raw_text, occurred_at,
-             amount, currency, category, due_at, extra)
+             amount, currency, category, due_at, payload)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (created_at, type, raw_text, occurred_at,
-         amount, currency, category, due_at, extra_json),
+         amount, currency, category, due_at, payload_json),
     )
     entry_id = cur.lastrowid
 
@@ -110,6 +233,11 @@ def add_entry(
 
     conn.commit()
     return entry_id
+
+
+def _ensure_type(conn, name):
+    """Register `name` in the type vocabulary if it isn't already there."""
+    conn.execute("INSERT OR IGNORE INTO types (name) VALUES (?)", (name,))
 
 
 def _normalize_tags(tags):
@@ -131,10 +259,10 @@ def _upsert_tag(conn, name):
 
 
 def _row_to_dict(row):
-    """Turn a sqlite3.Row into a plain dict, parsing the JSON `extra`."""
+    """Turn a sqlite3.Row into a plain dict, parsing the JSON `payload`."""
     d = dict(row)
-    if d.get("extra") is not None:
-        d["extra"] = json.loads(d["extra"])
+    if d.get("payload") is not None:
+        d["payload"] = json.loads(d["payload"])
     return d
 
 

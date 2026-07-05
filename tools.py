@@ -17,24 +17,35 @@ import db
 
 # Handed to the SQL agent so it knows what it's writing against.
 SCHEMA_DOC = """\
+types  -- the controlled vocabulary of entry types (one row per allowed type)
+  name         TEXT PRIMARY KEY   -- e.g. 'note', 'expense', 'link'
+
 entries  -- one row per memory (note, expense, link, ...)
   id           INTEGER PRIMARY KEY (auto)
-  created_at   TEXT   -- recording time. ALWAYS set this to the SQL expression
-                      --   strftime('%Y-%m-%dT%H:%M:%SZ','now') (unquoted) so the
-                      --   database fills the real current UTC time
-  type         TEXT   -- 'note' | 'expense' | 'link' | ... (free-form)
+  created_at   TEXT   -- recording time, a UTC instant. ALWAYS set this to the SQL
+                      --   expression strftime('%Y-%m-%dT%H:%M:%SZ','now') (unquoted)
+                      --   so the database fills the real current UTC time. This is
+                      --   a timestamp, NOT a calendar day: never filter 'today' on
+                      --   it (it can be a day off from the user's local date).
+  type         TEXT   -- FK -> types(name). MUST already exist in `types`, else
+                      --   the INSERT fails. Reuse an existing type; only create
+                      --   a genuinely new one (see the store rules).
   raw_text     TEXT   -- the user's words / a short description
-  occurred_at  TEXT   -- when the event happened: a date 'YYYY-MM-DD' (default
-                      --   today), OR a full 'YYYY-MM-DDTHH:MM:SS' timestamp if
-                      --   the user mentions a time
+  occurred_at  TEXT   -- the calendar day the event belongs to, in the user's LOCAL
+                      --   date 'YYYY-MM-DD' (defaults to the local today if you omit
+                      --   it), OR a full 'YYYY-MM-DDTHH:MM:SS' if the user gives a
+                      --   time. THIS is the column to filter for 'today'/'yesterday'.
   amount       REAL   -- expenses: numeric amount (else NULL)
   currency     TEXT   -- expenses: e.g. 'INR' (else NULL)
   category     TEXT   -- expenses: e.g. 'food', 'subscription' (else NULL)
   due_at       TEXT   -- reserved; leave NULL
-  extra        TEXT   -- JSON string for type-specific fields, e.g. '{"url": "..."}'
+  payload      TEXT   -- JSON string for type-specific display fields, e.g. '{"url": "..."}'
 
 tags        (id INTEGER PK, name TEXT UNIQUE)   -- lowercase labels, stored once
 entry_tags  (entry_id INTEGER, tag_id INTEGER)  -- links entries to tags (many-to-many)
+
+To register a NEW type (only when no existing type fits), before the entry INSERT:
+  INSERT OR IGNORE INTO types (name) VALUES ('reminder');   -- lowercase, singular
 
 To tag an entry, run these as separate execute_sql calls:
   1. INSERT INTO entries (...) VALUES (...);          -- note the returned lastrowid

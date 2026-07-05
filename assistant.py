@@ -21,6 +21,7 @@ from datetime import date
 from agents import Agent, RunConfig, enable_verbose_stdout_logging
 from dotenv import load_dotenv
 
+import db
 from prefs import load_preferences, save_preference
 from tools import SCHEMA_DOC, execute_sql, query_db
 
@@ -57,24 +58,52 @@ def _with_prefs(text):
     return text
 
 
+def current_vocabulary():
+    """The live type + tag vocabularies, read fresh so new ones show up.
+
+    Injected into the specialist agents' prompts so they store and query using
+    the vocabulary that actually exists rather than guessing.
+    """
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+        return db.get_types(conn), db.get_tags(conn)
+    finally:
+        conn.close()
+
+
 def _sql_instructions(ctx, agent):
-    """Dynamic instructions so the SQL agent always knows today's date."""
+    """Dynamic instructions so the SQL agent knows today's date and the vocabulary."""
+    types, tags = current_vocabulary()
     return _with_prefs(
         f"Today is {date.today().isoformat()}.\n\n"
         "You turn a memory the user wants to keep into SQL and store it via the "
         "execute_sql tool. Write against this schema:\n\n"
         f"{SCHEMA_DOC}\n"
+        f"The current entry types are: {', '.join(types)}.\n"
+        f"Tags already in use: {', '.join(tags) if tags else '(none yet)'}.\n\n"
         "Rules:\n"
-        "- INSERT into `entries`. Put the user's words in raw_text and pick a "
-        "sensible `type` ('note', 'expense', 'link', ...).\n"
+        "- INSERT into `entries`. Put the user's words in raw_text.\n"
+        "- CHOOSING `type`: it is a foreign key onto the `types` table, so it "
+        "MUST be one that already exists. STRONGLY prefer an existing type — "
+        "reuse 'expense', never invent 'expenses'. Types are lowercase, "
+        "singular, one word. If (and only if) none of the existing types "
+        "genuinely fits, register a new one FIRST with "
+        "`INSERT OR IGNORE INTO types (name) VALUES ('...')`, then use it, and "
+        "note the new category in your closing confirmation (e.g. \"stored — I "
+        "started a new category 'recipe'\") so the user knows. When nothing "
+        "specific fits, fall back to 'note'.\n"
         "- ALWAYS set created_at to the SQL expression "
         "strftime('%Y-%m-%dT%H:%M:%SZ','now') (copy it verbatim and UNQUOTED) so "
         "the database stamps the real recording time — never write a literal "
         "date. Set occurred_at to when the event happened: a date (default "
         "today), or a full 'YYYY-MM-DDTHH:MM:SS' timestamp if the user mentions a "
         "time. For expenses, fill amount/currency/category.\n"
-        "- Add tags when there's an obvious theme (lowercase), linking via "
-        "entry_tags as shown in the schema notes.\n"
+        "- TAGGING: add a tag only when there's an obvious theme — not every "
+        "entry needs one. When a memory fits a tag ALREADY IN USE (listed above), "
+        "REUSE that exact name rather than coining a near-duplicate ('job-search', "
+        "not 'jobsearch'); only create a new tag when none fits. Tags are "
+        "lowercase; link them via entry_tags as shown in the schema notes.\n"
         "- Run ONE statement per execute_sql call. If it returns ok=false, READ "
         "the error, fix the SQL, and try again (a few attempts at most).\n"
         "- Use only INSERT and SELECT — never UPDATE, DELETE, or DROP.\n"
@@ -93,26 +122,42 @@ sql_agent = Agent(
 def _recall_instructions(ctx, agent):
     """Dynamic instructions for the read-only lookup agent."""
     today = date.today().isoformat()
+    types, tags = current_vocabulary()
     return _with_prefs(
         f"Today is {today}.\n\n"
         "You answer questions about the user's stored memories by querying the "
         "database READ-ONLY with the query_db tool. Schema:\n\n"
         f"{SCHEMA_DOC}\n"
+        f"Entry types in use: {', '.join(types)}.\n"
+        f"Tags in use: {', '.join(tags) if tags else '(none yet)'}.\n\n"
         "Guidance:\n"
         "- Write SELECT statements only. For fuzzy questions, cast a WIDE net: "
         "use LIKE on raw_text (e.g. raw_text LIKE '%dsa%' OR raw_text LIKE "
         "'%google%') and/or join tags through entry_tags.\n"
+        "- USE THE TAG LIST ABOVE: if the user's question maps to a tag that "
+        "actually exists (e.g. they ask about 'job search' and a 'job-search' tag "
+        "is listed), scope by that exact tag for precision — don't guess a tag "
+        "name that isn't in the list. BUT most entries are UNTAGGED, so a tag "
+        "filter alone will miss them: always ALSO search raw_text with LIKE, and "
+        "never rely on tags as the only filter. Similarly, only filter by a `type` "
+        "that appears in the types list above.\n"
+        "- DAY-BASED questions ('today', 'yesterday', a specific date or range): "
+        f"filter on `occurred_at` — it is the calendar day a memory belongs to, in "
+        f"the user's LOCAL date (today = '{today}'). Match by date prefix, e.g. "
+        f"occurred_at LIKE '{today}%'. Do NOT filter on `created_at` for these: it "
+        "is a UTC recording timestamp and is often a day off from the user's local "
+        "day, so it will silently miss entries saved 'today'. If you ever truly "
+        "need the recording day, convert it with date(created_at,'localtime').\n"
         "- Treat dates as SOFT hints, not hard filters. If the user names a topic "
         "(e.g. 'google dsa'), search by that topic first via LIKE/tags, and use "
         "the date only to rank relevance. A closely related entry may be dated a "
         f"day or two earlier — don't let an exact date hide it (today = '{today}'). "
-        "occurred_at may be a date OR a full timestamp, so match by date prefix, "
-        "e.g. occurred_at LIKE '2026-06-21%'.\n"
+        "occurred_at may be a date OR a full timestamp, so match by date prefix.\n"
         "- If a query returns little, DROP the date filter and broaden the topic "
         "terms, then try again before giving up. If query_db returns ok=false, "
         "read the error and fix the SQL.\n"
         "- Report the concrete details you found — quote any full URL verbatim "
-        "(from raw_text or the `extra` JSON), plus dates and tags. Prefer the "
+        "(from raw_text or the `payload` JSON), plus dates and tags. Prefer the "
         "most complete matching entry (e.g. the one that actually contains the "
         "link). If truly nothing matches, say so plainly."
     )
@@ -130,20 +175,33 @@ def _router_instructions(ctx, agent):
     return _with_prefs(
         "You are Second Brain, the user's personal memory assistant. For each "
         "message, decide which one applies:\n"
-        "- STORE: the user is telling you something to remember (a note, event, "
-        "expense, link, fact about their life). Call `store_memory` with the full "
-        "detail, then confirm warmly in one line.\n"
+        "- STORE: the user is telling you something to remember — a note, event, "
+        "expense, link, fact about their life, OR a fact/idea/requirement about a "
+        "project, product, or system they work on (e.g. 'for the second brain "
+        "project, all traces of a conversation should be in one place'). Call "
+        "`store_memory` with the full detail, then confirm warmly in one line. If "
+        "store_memory reports it started a NEW category, mention that in your "
+        "confirmation so the user knows a new type was created.\n"
         "- RECALL: the user is asking about their own past or stored data (what / "
         "when / where / how much, 'did I', 'show me', totals, insights). Call "
         "`recall_memories` with a clear description of what they're looking for, "
+        "passing along the exact topic/theme words the user used (these often line "
+        "up with stored tags, so the lookup can scope precisely), "
         "then answer using ONLY what it returns — relay the specific details, "
         "including any full link/URL verbatim, rather than over-summarizing. You "
         "must NEVER say you don't know or don't remember before calling "
         "`recall_memories` first.\n"
-        "- PREFERENCE: the user is telling you HOW to behave from now on "
-        "('from now on...', 'always...', 'when I say X do Y', 'you should...'). "
-        "Call `save_preference` with the rule, then confirm in one line. This is "
-        "different from STORE — preferences are behaviour rules, not facts/events.\n"
+        "- PREFERENCE: the user is telling you how YOU (the assistant) should "
+        "behave from now on — a rule about your OWN responses ('from now on...', "
+        "'always show amounts in INR', 'keep replies short', 'when I say X do Y'). "
+        "Call `save_preference` with the rule, then confirm in one line.\n"
+        "  PREFERENCE vs STORE — the word 'should' does NOT make something a "
+        "preference. Ask WHO the statement is about: if it constrains how YOU "
+        "reply, it's a PREFERENCE; if it's a fact or requirement about something "
+        "ELSE — the user's project, product, system, or life (even when phrased "
+        "with 'should', e.g. 'the project should log traces in one place') — it's "
+        "a memory, so STORE it. When genuinely torn between the two, STORE it: "
+        "facts belong in the database, where they can be queried later.\n"
         "- ASK: a store or recall is ambiguous or missing info (e.g. an expense "
         "with no amount). Ask one short follow-up question instead of guessing.\n"
         "- CHAT: otherwise just talk, briefly and warmly.\n"
