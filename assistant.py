@@ -27,6 +27,7 @@ from prefs import load_preferences, save_preference
 from tools import (
     SCHEMA_DOC,
     TASK_SCHEMA_DOC,
+    add_attachment,
     complete_task,
     create_task,
     execute_sql,
@@ -217,8 +218,20 @@ def _task_instructions(ctx, agent):
         "don't have it, you won't be able to look it up here — ask the user to "
         "clarify which task, or note that recall can find it. Use complete_task to "
         "mark done, update_task to change status/due/priority/project/title.\n"
+        "- ATTACH: to add an image/link/file to a task, call add_attachment with "
+        "the task's id and the URL (set `type` to 'image', 'link', or 'file'; "
+        "'link' is the default). This is for material tied to a task — a standalone "
+        "bookmark the user just wants to save is a memory, not a task attachment.\n"
+        "- SUBTASK: to break a task into steps, create each step with "
+        "`parent_task_id` set to the parent's id (you'll need that id — recall can "
+        "find it). A subtask inherits its parent's project automatically.\n"
         "- If create_task reports a NEW project was created, mention it so the user "
-        "knows. When done, reply with a short confirmation of what you did."
+        "knows.\n"
+        "- ALWAYS include the task's id in your confirmation, e.g. \"Added task #6: "
+        "Prepare the Q3 report\". The id is how later turns refer back to it (to "
+        "attach a file, add subtasks, or mark it done), so it must appear in your "
+        "reply. When the user refers to 'it' or 'that task', use the id from the "
+        "recent conversation."
     )
 
 
@@ -226,7 +239,7 @@ task_agent = Agent(
     name="Task Manager",
     model=MODEL,
     instructions=_task_instructions,
-    tools=[create_task, update_task, complete_task],
+    tools=[create_task, update_task, complete_task, add_attachment],
 )
 
 
@@ -254,7 +267,10 @@ def _router_instructions(ctx, agent):
         "'add a task…', 'I need to…', 'mark X done', 'move X to the Y project'). "
         "This is different from STORE: a task is an action to track and complete, "
         "not a fact to remember. Call `manage_task` with the full detail (what to "
-        "do, any due date, any project), then relay its confirmation.\n"
+        "do, any due date, any project) — and when the user refers to an earlier "
+        "task ('it', 'that task'), pass along its id from the recent conversation. "
+        "Relay manage_task's confirmation, KEEPING any task id it reports (the user "
+        "needs it to refer back).\n"
         "- RECALL: the user is asking about their own past or stored data, OR "
         "asking to LIST/look-up tasks ('show my open tasks', 'what's due today', "
         "'what's in the web-app project'). Task reads go through recall too. Call "

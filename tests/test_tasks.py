@@ -158,6 +158,96 @@ def test_get_tasks_filters_by_project(conn):
     assert [t["title"] for t in work] == ["work task"]
 
 
+# --- subtasks: a task under another task, in the same project ---
+
+
+def test_top_level_task_has_no_parent(conn):
+    task_id = tasks.create_task(conn, title="standalone")
+    assert tasks.get_task(conn, task_id)["parent_id"] is None
+
+
+def test_subtask_inherits_parent_project(conn):
+    parent = tasks.create_task(conn, title="Interview prep", project="job-search")
+    sub = tasks.create_task(conn, title="Revise trees", parent_id=parent)
+
+    t = tasks.get_task(conn, sub)
+    assert t["parent_id"] == parent
+    assert t["project"] == "job-search"  # inherited, not Inbox
+
+
+def test_subtask_project_follows_parent_even_if_project_given(conn):
+    parent = tasks.create_task(conn, title="Trip", project="travel")
+    sub = tasks.create_task(conn, title="Book hotel", parent_id=parent, project="ignored")
+
+    assert tasks.get_task(conn, sub)["project"] == "travel"
+
+
+def test_get_subtasks_returns_children(conn):
+    parent = tasks.create_task(conn, title="Parent")
+    tasks.create_task(conn, title="Child A", parent_id=parent)
+    tasks.create_task(conn, title="Child B", parent_id=parent)
+
+    titles = [s["title"] for s in tasks.get_subtasks(conn, parent)]
+    assert sorted(titles) == ["Child A", "Child B"]
+
+
+def test_subtask_progress_counts_done_over_total(conn):
+    parent = tasks.create_task(conn, title="Parent")
+    tasks.create_task(conn, title="A", parent_id=parent)
+    done = tasks.create_task(conn, title="B", parent_id=parent)
+    tasks.complete_task(conn, done)
+
+    assert tasks.subtask_progress(conn, parent) == {"done": 1, "total": 2}
+
+
+# --- attachments: task-scoped links/images/files ---
+
+
+def test_add_attachment_round_trips(conn):
+    task_id = tasks.create_task(conn, title="design review")
+
+    tasks.add_attachment(
+        conn, task_id, url="https://x/mock.png", type="image", description="the mockup"
+    )
+
+    atts = tasks.get_attachments(conn, task_id)
+    assert len(atts) == 1
+    assert atts[0]["url"] == "https://x/mock.png"
+    assert atts[0]["type"] == "image"
+    assert atts[0]["description"] == "the mockup"
+
+
+def test_attachment_defaults_to_link_type(conn):
+    task_id = tasks.create_task(conn, title="read later")
+    tasks.add_attachment(conn, task_id, url="https://x/article")
+
+    assert tasks.get_attachments(conn, task_id)[0]["type"] == "link"
+
+
+def test_attachment_type_is_constrained(conn):
+    task_id = tasks.create_task(conn, title="bad type")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO attachments (task_id, type, url) VALUES (?, 'video', 'u')",
+            (task_id,),
+        )
+
+
+def test_deleting_a_task_cascades_its_attachments(conn):
+    task_id = tasks.create_task(conn, title="doomed")
+    tasks.add_attachment(conn, task_id, url="https://x/a")
+
+    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+
+    assert tasks.get_attachments(conn, task_id) == []
+
+
+def test_get_attachments_empty_when_none(conn):
+    task_id = tasks.create_task(conn, title="bare")
+    assert tasks.get_attachments(conn, task_id) == []
+
+
 # --- created_at is a real UTC recording timestamp (like entries) ---
 
 

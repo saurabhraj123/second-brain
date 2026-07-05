@@ -139,6 +139,10 @@ tasks
   parent_id    INTEGER -> tasks.id   -- NULL = top-level; set = subtask
   created_at   TEXT   -- UTC recording instant (do NOT filter 'today' on it)
   completed_at TEXT   -- set when done
+attachments
+  id, task_id -> tasks.id, type ('image'|'link'|'file'), url, description, created_at
+  -- e.g. "tasks with images": SELECT DISTINCT t.* FROM tasks t
+  --      JOIN attachments a ON a.task_id=t.id WHERE a.type='image';
 To list tasks, join through projects/organizations for their names, e.g.
   SELECT t.title, t.status, t.due_at, p.name AS project, o.name AS org
   FROM tasks t JOIN projects p ON p.id=t.project_id
@@ -171,12 +175,15 @@ def create_task(
     org: str = "",
     due_at: str = "",
     priority: str = "",
+    parent_task_id: int = 0,
 ) -> str:
     """Create a task/to-do and return it as JSON.
 
     Only `title` is required. Omit `project`/`org` to file it in the default
     Inbox under Personal. `due_at` is the local day/time it's due ('YYYY-MM-DD'
-    or a full timestamp). Returns {"ok": true, "task": {...}}.
+    or a full timestamp). Pass `parent_task_id` to make it a SUBTASK of that task
+    (it inherits the parent's project; `project`/`org` are ignored). Returns
+    {"ok": true, "task": {...}}.
     """
     def op(conn):
         task_id = tasks.create_task(
@@ -187,6 +194,7 @@ def create_task(
             org=org or None,
             due_at=due_at or None,
             priority=priority or None,
+            parent_id=parent_task_id or None,
         )
         return {"ok": True, "task": tasks.get_task(conn, task_id)}
 
@@ -238,5 +246,27 @@ def complete_task(task_id: int) -> str:
             return {"ok": False, "error": f"no task with id {task_id}"}
         tasks.complete_task(conn, task_id)
         return {"ok": True, "task": tasks.get_task(conn, task_id)}
+
+    return json.dumps(_task_write(op))
+
+
+@function_tool
+def add_attachment(
+    task_id: int, url: str, type: str = "link", description: str = ""
+) -> str:
+    """Attach an image, link, or file (by URL) to an existing task. `type` is one
+    of 'image' / 'link' / 'file' (default 'link'). Returns
+    {"ok": true, "attachment": {...}}.
+    """
+    def op(conn):
+        if tasks.get_task(conn, task_id) is None:
+            return {"ok": False, "error": f"no task with id {task_id}"}
+        att_id = tasks.add_attachment(
+            conn, task_id, url=url, type=type, description=description or None
+        )
+        return {
+            "ok": True,
+            "attachment": {"id": att_id, "task_id": task_id, "type": type, "url": url},
+        }
 
     return json.dumps(_task_write(op))

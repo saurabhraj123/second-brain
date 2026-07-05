@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_at  TEXT,
     payload       TEXT
 );
+
+-- Task-scoped attachments: an image/link/file with an optional description.
+-- Deleting a task removes its attachments. (Standalone bookmarks are memories,
+-- not attachments — they live in the `entries` link type.)
+CREATE TABLE IF NOT EXISTS attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    type         TEXT NOT NULL DEFAULT 'link' CHECK (type IN ('image', 'link', 'file')),
+    url          TEXT NOT NULL,
+    description  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 """
 
 # Columns a caller may set through update_task (project is resolved separately).
@@ -124,7 +136,13 @@ def create_task(
     default org — so a bare capture still satisfies the task -> project -> org
     invariant without the caller specifying anything.
     """
-    if project is None:
+    if parent_id is not None:
+        # A subtask always lives in its parent's project — inherit it.
+        parent = get_task(conn, parent_id)
+        if parent is None:
+            raise ValueError(f"no parent task with id {parent_id}")
+        project_id = parent["project_id"]
+    elif project is None:
         project_id = ensure_project(conn, DEFAULT_PROJECT, DEFAULT_ORG)
     else:
         project_id = ensure_project(conn, project, org)
@@ -196,6 +214,47 @@ def get_task(conn, task_id):
     """Return one task (with project/org names), or None."""
     row = conn.execute(f"{_SELECT} WHERE t.id = ?", (task_id,)).fetchone()
     return _row_to_task(row) if row else None
+
+
+def get_subtasks(conn, parent_id):
+    """Return the direct subtasks of a task (newest first)."""
+    return [
+        _row_to_task(r)
+        for r in conn.execute(f"{_SELECT} WHERE t.parent_id = ? ORDER BY t.id DESC", (parent_id,))
+    ]
+
+
+def subtask_progress(conn, parent_id):
+    """Return {'done': m, 'total': n} over a task's direct subtasks."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "COALESCE(SUM(status = 'done'), 0) AS done "
+        "FROM tasks WHERE parent_id = ?",
+        (parent_id,),
+    ).fetchone()
+    return {"done": row["done"], "total": row["total"]}
+
+
+def add_attachment(conn, task_id, *, url, type="link", description=None):
+    """Attach an image/link/file to a task and return the attachment id."""
+    cur = conn.execute(
+        "INSERT INTO attachments (task_id, type, url, description) VALUES (?, ?, ?, ?)",
+        (task_id, type, url, description),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_attachments(conn, task_id):
+    """Return a task's attachments (oldest first)."""
+    return [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, task_id, type, url, description, created_at "
+            "FROM attachments WHERE task_id = ? ORDER BY id",
+            (task_id,),
+        )
+    ]
 
 
 def get_tasks(conn, *, status=None, project=None):
