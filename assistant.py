@@ -22,8 +22,17 @@ from agents import Agent, RunConfig, enable_verbose_stdout_logging
 from dotenv import load_dotenv
 
 import db
+import tasks
 from prefs import load_preferences, save_preference
-from tools import SCHEMA_DOC, execute_sql, query_db
+from tools import (
+    SCHEMA_DOC,
+    TASK_SCHEMA_DOC,
+    complete_task,
+    create_task,
+    execute_sql,
+    query_db,
+    update_task,
+)
 
 load_dotenv()  # load OPENAI_API_KEY from .env if present
 
@@ -68,6 +77,16 @@ def current_vocabulary():
     try:
         db.init_db(conn)
         return db.get_types(conn), db.get_tags(conn)
+    finally:
+        conn.close()
+
+
+def current_task_context():
+    """The live task statuses + existing projects, so the task agent reuses them."""
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+        return tasks.get_statuses(conn), tasks.get_projects(conn)
     finally:
         conn.close()
 
@@ -125,9 +144,12 @@ def _recall_instructions(ctx, agent):
     types, tags = current_vocabulary()
     return _with_prefs(
         f"Today is {today}.\n\n"
-        "You answer questions about the user's stored memories by querying the "
-        "database READ-ONLY with the query_db tool. Schema:\n\n"
+        "You answer questions about the user's stored memories AND their tasks by "
+        "querying the database READ-ONLY with the query_db tool. Memory schema:\n\n"
         f"{SCHEMA_DOC}\n"
+        "Task schema (for questions like 'show my open tasks', 'what's due', "
+        "'what's in the web-app project'):\n\n"
+        f"{TASK_SCHEMA_DOC}\n"
         f"Entry types in use: {', '.join(types)}.\n"
         f"Tags in use: {', '.join(tags) if tags else '(none yet)'}.\n\n"
         "Guidance:\n"
@@ -163,6 +185,51 @@ def _recall_instructions(ctx, agent):
     )
 
 
+def _task_instructions(ctx, agent):
+    """Dynamic instructions for the task-management agent."""
+    today = date.today().isoformat()
+    statuses, projects = current_task_context()
+    return _with_prefs(
+        f"Today is {today}.\n\n"
+        "You manage the user's tasks/to-dos with the create_task, update_task, "
+        "and complete_task tools. Each returns JSON; if it comes back "
+        '{"ok": false, ...} read the error and try again.\n\n'
+        f"Statuses: {', '.join(statuses)}.\n"
+        f"Existing projects: {', '.join(projects) if projects else '(only the default Inbox)'}.\n\n"
+        "Rules:\n"
+        "- CREATE: call create_task with a concise `title` (and `description` for "
+        "any extra detail). Set `due_at` to the LOCAL day/time when the user gives "
+        "one ('YYYY-MM-DD', or a full timestamp if they mention a time).\n"
+        "- PROJECT: if the user NAMES a project ('in the web-app project', 'under "
+        "Toddle'), ALWAYS pass it as `project` (and `org` if given) — even if it's "
+        "not in the list above; a new project is created automatically. If they "
+        "name one already in the list, reuse that exact name. Use just the "
+        "project's NAME, not the surrounding words (e.g. 'web-app', not 'web-app "
+        "project'; 'home reno', not 'the home reno project'). If NO project is "
+        "mentioned and none is obvious, just omit `project` and it lands in Inbox — "
+        "do NOT ask which project; they can reorganize later. Bias hard toward not "
+        "interrogating the user.\n"
+        "- REMINDER EXCEPTION: if the user phrases it as a reminder ('remind me "
+        "to…') but gives NO date/time, DO ask one short follow-up: 'when should I "
+        "remind you?' — a reminder without a time can't function. (A plain to-do "
+        "with no date is fine; just create it.)\n"
+        "- UPDATE / COMPLETE: to change or finish a task you need its id. If you "
+        "don't have it, you won't be able to look it up here — ask the user to "
+        "clarify which task, or note that recall can find it. Use complete_task to "
+        "mark done, update_task to change status/due/priority/project/title.\n"
+        "- If create_task reports a NEW project was created, mention it so the user "
+        "knows. When done, reply with a short confirmation of what you did."
+    )
+
+
+task_agent = Agent(
+    name="Task Manager",
+    model=MODEL,
+    instructions=_task_instructions,
+    tools=[create_task, update_task, complete_task],
+)
+
+
 recall_agent = Agent(
     name="Memory Lookup",
     model=MODEL,
@@ -182,11 +249,18 @@ def _router_instructions(ctx, agent):
         "`store_memory` with the full detail, then confirm warmly in one line. If "
         "store_memory reports it started a NEW category, mention that in your "
         "confirmation so the user knows a new type was created.\n"
-        "- RECALL: the user is asking about their own past or stored data (what / "
-        "when / where / how much, 'did I', 'show me', totals, insights). Call "
+        "- TASK: the user wants to create, update, or finish an actionable to-do "
+        "or reminder — something to DO, often with a due date ('remind me to…', "
+        "'add a task…', 'I need to…', 'mark X done', 'move X to the Y project'). "
+        "This is different from STORE: a task is an action to track and complete, "
+        "not a fact to remember. Call `manage_task` with the full detail (what to "
+        "do, any due date, any project), then relay its confirmation.\n"
+        "- RECALL: the user is asking about their own past or stored data, OR "
+        "asking to LIST/look-up tasks ('show my open tasks', 'what's due today', "
+        "'what's in the web-app project'). Task reads go through recall too. Call "
         "`recall_memories` with a clear description of what they're looking for, "
         "passing along the exact topic/theme words the user used (these often line "
-        "up with stored tags, so the lookup can scope precisely), "
+        "up with stored tags or project names, so the lookup can scope precisely), "
         "then answer using ONLY what it returns — relay the specific details, "
         "including any full link/URL verbatim, rather than over-summarizing. You "
         "must NEVER say you don't know or don't remember before calling "
@@ -221,6 +295,15 @@ router_agent = Agent(
                 "Persist something the user wants to remember (note, event, "
                 "expense, link, etc.). Pass the full natural-language detail, "
                 "including any amount, date, or theme the user mentioned."
+            ),
+        ),
+        task_agent.as_tool(
+            tool_name="manage_task",
+            tool_description=(
+                "Create, update, or complete an actionable to-do / reminder. Pass "
+                "the full detail — what to do, any due date, and any project/org "
+                "it belongs to. Use for 'remind me to…', 'add a task…', 'mark X "
+                "done', 'move X to project Y'."
             ),
         ),
         recall_agent.as_tool(

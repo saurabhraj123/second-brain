@@ -110,6 +110,13 @@ def init_db(conn):
     conn.executescript(SCHEMA)
     conn.commit()
 
+    # 4. Create the task subsystem tables + seeds. Imported locally because
+    #    tasks.py imports db (for connections) — a top-level import here would
+    #    be circular.
+    import tasks
+
+    tasks.init_tasks(conn)
+
 
 def _migrate_entries_if_needed(conn):
     """Bring a legacy `entries` table up to the current schema, preserving data.

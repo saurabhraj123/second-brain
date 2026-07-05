@@ -14,6 +14,7 @@ import json
 from agents import function_tool
 
 import db
+import tasks
 
 # Handed to the SQL agent so it knows what it's writing against.
 SCHEMA_DOC = """\
@@ -114,3 +115,128 @@ def query_db(query: str) -> str:
     only. If it fails, read the error, fix the SQL, and call this again.
     """
     return json.dumps(query_readonly(query))
+
+
+# --- Tasks -----------------------------------------------------------------
+#
+# Task WRITES go through these typed tools (never free-form UPDATE from the
+# model), which keeps the memory path's append-only safety intact. Task READS
+# ("show my open tasks") reuse query_db against the tables documented below.
+
+# Handed to the recall agent so it can answer questions about tasks read-only.
+TASK_SCHEMA_DOC = """\
+organizations (id, name)                       -- e.g. 'Personal' (default), 'Toddle'
+projects      (id, name, org_id -> organizations.id)   -- e.g. 'Inbox' (default)
+task_statuses (name)                           -- 'open' | 'in-progress' | 'done' | 'cancelled'
+tasks
+  id           INTEGER PRIMARY KEY
+  title        TEXT
+  description  TEXT
+  status       TEXT   -- FK -> task_statuses(name)
+  due_at       TEXT   -- the local calendar day/time it's due (like entries.occurred_at)
+  priority     TEXT
+  project_id   INTEGER -> projects.id
+  parent_id    INTEGER -> tasks.id   -- NULL = top-level; set = subtask
+  created_at   TEXT   -- UTC recording instant (do NOT filter 'today' on it)
+  completed_at TEXT   -- set when done
+To list tasks, join through projects/organizations for their names, e.g.
+  SELECT t.title, t.status, t.due_at, p.name AS project, o.name AS org
+  FROM tasks t JOIN projects p ON p.id=t.project_id
+               JOIN organizations o ON o.id=p.org_id
+  WHERE t.status='open';
+"""
+
+
+def _task_write(fn):
+    """Run a task-mutating callable, returning the {ok, ...} result dict.
+
+    Opens a read-write connection, ensures the schema exists, and turns any
+    error into a readable result (never raises) so the agent can recover.
+    """
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+        return fn(conn)
+    except Exception as e:  # e.g. an invalid status trips the FK
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        conn.close()
+
+
+@function_tool
+def create_task(
+    title: str,
+    description: str = "",
+    project: str = "",
+    org: str = "",
+    due_at: str = "",
+    priority: str = "",
+) -> str:
+    """Create a task/to-do and return it as JSON.
+
+    Only `title` is required. Omit `project`/`org` to file it in the default
+    Inbox under Personal. `due_at` is the local day/time it's due ('YYYY-MM-DD'
+    or a full timestamp). Returns {"ok": true, "task": {...}}.
+    """
+    def op(conn):
+        task_id = tasks.create_task(
+            conn,
+            title=title,
+            description=description or None,
+            project=project or None,
+            org=org or None,
+            due_at=due_at or None,
+            priority=priority or None,
+        )
+        return {"ok": True, "task": tasks.get_task(conn, task_id)}
+
+    return json.dumps(_task_write(op))
+
+
+@function_tool
+def update_task(
+    task_id: int,
+    status: str = "",
+    due_at: str = "",
+    priority: str = "",
+    project: str = "",
+    title: str = "",
+    description: str = "",
+) -> str:
+    """Update fields of an existing task (found via a prior lookup). Pass only the
+    fields to change; blanks are ignored. `status` must be one of open/
+    in-progress/done/cancelled. Returns {"ok": true, "task": {...}}.
+    """
+    def op(conn):
+        if tasks.get_task(conn, task_id) is None:
+            return {"ok": False, "error": f"no task with id {task_id}"}
+        fields = {
+            k: v
+            for k, v in {
+                "status": status,
+                "due_at": due_at,
+                "priority": priority,
+                "project": project,
+                "title": title,
+                "description": description,
+            }.items()
+            if v
+        }
+        tasks.update_task(conn, task_id, **fields)
+        return {"ok": True, "task": tasks.get_task(conn, task_id)}
+
+    return json.dumps(_task_write(op))
+
+
+@function_tool
+def complete_task(task_id: int) -> str:
+    """Mark a task done (sets status='done' and stamps completed_at). Returns
+    {"ok": true, "task": {...}}.
+    """
+    def op(conn):
+        if tasks.get_task(conn, task_id) is None:
+            return {"ok": False, "error": f"no task with id {task_id}"}
+        tasks.complete_task(conn, task_id)
+        return {"ok": True, "task": tasks.get_task(conn, task_id)}
+
+    return json.dumps(_task_write(op))
