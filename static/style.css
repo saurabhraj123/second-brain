@@ -1847,9 +1847,6 @@ textarea.form-control {
     height: 12px;
 }
 
-.icon-refresh-spinner.spinning {
-    animation: spin 1s linear infinite;
-}
 
 .ai-summary-header {
     display: flex;

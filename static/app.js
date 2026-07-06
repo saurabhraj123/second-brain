@@ -197,9 +197,11 @@ async function fetchDashboardSummary(forceRefresh = false) {
         summaryText.innerHTML = '<span class="cmd-feedback-spinner" style="display:inline-block; width:12px; height:12px; vertical-align:middle; margin-right:6px;"></span> AI Agent is compiling your insights...';
     }
 
-    const refreshIcon = document.querySelector(".btn-refresh-ai i");
-    if (refreshIcon) {
-        refreshIcon.classList.add("spinning");
+    const refreshBtn = document.querySelector(".btn-refresh-ai");
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.style.opacity = "0.5";
+        refreshBtn.style.pointerEvents = "none";
     }
 
     try {
@@ -254,8 +256,10 @@ async function fetchDashboardSummary(forceRefresh = false) {
             summaryText.textContent = "Failed to load AI Insights.";
         }
     } finally {
-        if (refreshIcon) {
-            refreshIcon.classList.remove("spinning");
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.style.opacity = "1";
+            refreshBtn.style.pointerEvents = "auto";
         }
     }
 }
