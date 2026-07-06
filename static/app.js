@@ -165,7 +165,19 @@ function formatMarkdown(text) {
     
     lines.forEach(line => {
         const trimmed = line.trim();
-        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        if (trimmed.startsWith('### ')) {
+            if (inList) {
+                resultLines.push('</ul>');
+                inList = false;
+            }
+            resultLines.push(`<h3 class="insight-heading">${trimmed.slice(4)}</h3>`);
+        } else if (trimmed.startsWith('## ')) {
+            if (inList) {
+                resultLines.push('</ul>');
+                inList = false;
+            }
+            resultLines.push(`<h3 class="insight-heading">${trimmed.slice(3)}</h3>`);
+        } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
             if (!inList) {
                 resultLines.push('<ul>');
                 inList = true;
