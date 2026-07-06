@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Second Brain - AI Memory Dashboard</title>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i data-lucide="brain-circuit" class="logo-icon"></i>
+                    <span class="logo-text">Second Brain</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#/dashboard" class="nav-item active" id="nav-dashboard">
+                    <i data-lucide="layout-dashboard"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#/projects" class="nav-item" id="nav-projects">
+                    <i data-lucide="folder-kanban"></i>
+                    <span>Projects</span>
+                </a>
+                <a href="#/memories" class="nav-item" id="nav-memories">
+                    <i data-lucide="database"></i>
+                    <span>Memories</span>
+                </a>
+                <a href="#/chat" class="nav-item" id="nav-chat">
+                    <i data-lucide="message-square-code"></i>
+                    <span>AI Chat</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="cmd-palette-btn" onclick="openCommandPalette()">
+                    <i data-lucide="command"></i>
+                    <span>Quick Actions</span>
+                    <span class="kbd">⌘K</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Top Action/Status Bar -->
+            <header class="top-bar">
+                <div class="header-left">
+                    <h1 id="page-title">Dashboard</h1>
+                </div>
+                <div class="header-right">
+                    <!-- Dashboard Time Filters (hidden on other pages) -->
+                    <div class="filter-group" id="dashboard-filters">
+                        <button class="filter-btn active" data-filter="daily">Daily</button>
+                        <button class="filter-btn" data-filter="weekly">Weekly</button>
+                        <button class="filter-btn" data-filter="monthly">Monthly</button>
+                    </div>
+
+                    <!-- Quick Add Button -->
+                    <button class="btn btn-primary" onclick="openQuickAddModal()">
+                        <i data-lucide="plus"></i>
+                        <span>Quick Add</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Dynamic Pages -->
+            <section class="content-body">
+                <!-- Dashboard Panel -->
+                <div id="panel-dashboard" class="content-panel active">
+                    <!-- KPI Summary Row -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card glass">
+                            <div class="kpi-header">
+                                <span class="kpi-title">Total Tasks</span>
+                                <div class="kpi-icon-wrapper blue"><i data-lucide="check-square"></i></div>
+                            </div>
+                            <div class="kpi-value" id="kpi-total-tasks">0</div>
+                            <div class="kpi-subtext" id="kpi-task-breakdown">0 open / 0 in-progress</div>
+                        </div>
+
+                        <div class="kpi-card glass">
+                            <div class="kpi-header">
+                                <span class="kpi-title">Completed Tasks</span>
+                                <div class="kpi-icon-wrapper green"><i data-lucide="check-circle-2"></i></div>
+                            </div>
+                            <div class="kpi-value" id="kpi-completed-tasks">0</div>
+                            <div class="kpi-subtext" id="kpi-completion-rate">0% completion rate</div>
+                        </div>
+
+                        <div class="kpi-card glass">
+                            <div class="kpi-header">
+                                <span class="kpi-title">Expenses</span>
+                                <div class="kpi-icon-wrapper purple"><i data-lucide="receipt"></i></div>
+                            </div>
+                            <div class="kpi-value" id="kpi-total-expenses">0.00</div>
+                            <div class="kpi-subtext" id="kpi-expenses-currency">INR</div>
+                        </div>
+
+                        <div class="kpi-card glass">
+                            <div class="kpi-header">
+                                <span class="kpi-title">Overdue Tasks</span>
+                                <div class="kpi-icon-wrapper red"><i data-lucide="alert-triangle"></i></div>
+                            </div>
+                            <div class="kpi-value text-danger" id="kpi-overdue-tasks">0</div>
+                            <div class="kpi-subtext">Needs immediate attention</div>
+                        </div>
+                    </div>
+
+                    <!-- Analytics Grid -->
+                    <div class="analytics-grid">
+                        <!-- Chart Card -->
+                        <div class="analytics-card glass chart-card-container">
+                            <h3>Expense Trend</h3>
+                            <div class="chart-wrapper">
+                                <!-- SVG Chart will be injected here -->
+                                <div class="chart-placeholder" id="expense-trend-chart">
+                                    <div class="chart-empty">No expense data in this period</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Categories Breakdown -->
+                        <div class="analytics-card glass">
+                            <h3>Expense Categories</h3>
+                            <div class="category-breakdown-list" id="expense-categories-list">
+                                <div class="empty-state">No expense breakdown available</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Activities and Projects -->
+                    <div class="dashboard-double-column">
+                        <div class="activities-card glass">
+                            <h3>Recent Memories & Activity</h3>
+                            <div class="timeline" id="recent-activity-timeline">
+                                <div class="timeline-empty">No recent activity</div>
+                            </div>
+                        </div>
+
+                        <div class="projects-card glass">
+                            <h3>Project Tasks Progress</h3>
+                            <div class="project-mini-list" id="project-mini-list">
+                                <div class="empty-state">No projects loaded</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Projects Panel -->
+                <div id="panel-projects" class="content-panel">
+                    <!-- Project Selection Sidebar + Kanban Board Container -->
+                    <div class="projects-workspace">
+                        <!-- Projects List Column -->
+                        <div class="projects-sidebar glass">
+                            <div class="sidebar-section-header">
+                                <h3>Projects</h3>
+                                <button class="btn-icon" onclick="openCreateProjectModal()" title="New Project">
+                                    <i data-lucide="folder-plus"></i>
+                                </button>
+                            </div>
+                            <div class="project-list" id="projects-menu-list">
+                                <!-- Projects will be injected here -->
+                            </div>
+                        </div>
+
+                        <!-- Kanban Board Content Area -->
+                        <div class="board-container">
+                            <div class="board-header">
+                                <div class="board-title-group">
+                                    <h2 id="active-project-name">Select a Project</h2>
+                                    <span class="badge" id="active-project-org"></span>
+                                </div>
+                                <button class="btn btn-secondary" onclick="openAddTaskModal()" id="btn-board-add-task" style="display: none;">
+                                    <i data-lucide="plus"></i>
+                                    <span>Add Task</span>
+                                </button>
+                            </div>
+
+                            <!-- Kanban Columns -->
+                            <div class="kanban-board" id="kanban-board" style="display: none;">
+                                <div class="board-column" data-status="open">
+                                    <div class="column-header">
+                                        <span class="column-title">To Do</span>
+                                        <span class="column-count" id="count-todo">0</span>
+                                    </div>
+                                    <div class="column-cards" id="column-todo" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'open')"></div>
+                                </div>
+
+                                <div class="board-column" data-status="in-progress">
+                                    <div class="column-header">
+                                        <span class="column-title">In Progress</span>
+                                        <span class="column-count" id="count-inprogress">0</span>
+                                    </div>
+                                    <div class="column-cards" id="column-inprogress" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'in-progress')"></div>
+                                </div>
+
+                                <div class="board-column" data-status="done">
+                                    <div class="column-header">
+                                        <span class="column-title">Completed</span>
+                                        <span class="column-count" id="count-done">0</span>
+                                    </div>
+                                    <div class="column-cards" id="column-done" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'done')"></div>
+                                </div>
+
+                                <div class="board-column" data-status="cancelled">
+                                    <div class="column-header">
+                                        <span class="column-title">Cancelled</span>
+                                        <span class="column-count" id="count-cancelled">0</span>
+                                    </div>
+                                    <div class="column-cards" id="column-cancelled" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'cancelled')"></div>
+                                </div>
+                            </div>
+
+                            <div class="board-empty" id="board-empty-state">
+                                <i data-lucide="arrow-left-right" class="empty-icon"></i>
+                                <p>Select a project from the list on the left to view tasks and manage progress.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Memories Panel -->
+                <div id="panel-memories" class="content-panel">
+                    <!-- Search and filters -->
+                    <div class="memories-filter-bar glass">
+                        <div class="search-input-wrapper">
+                            <i data-lucide="search" class="search-icon"></i>
+                            <input type="text" id="memory-search-input" placeholder="Search memories, notes, links, amounts...">
+                        </div>
+                        <div class="filter-selectors">
+                            <select id="memory-type-filter" class="form-control">
+                                <option value="">All Types</option>
+                                <!-- Injected dynamically -->
+                            </select>
+                            <select id="memory-tag-filter" class="form-control">
+                                <option value="">All Tags</option>
+                                <!-- Injected dynamically -->
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Memories List Grid -->
+                    <div class="memories-grid" id="memories-grid">
+                        <!-- Memories cards dynamically injected -->
+                    </div>
+                </div>
+
+                <!-- AI Chat Panel -->
+                <div id="panel-chat" class="content-panel">
+                    <div class="chat-layout glass">
+                        <div class="chat-messages" id="chat-messages-container">
+                            <div class="message assistant">
+                                <div class="message-avatar">
+                                    <i data-lucide="brain"></i>
+                                </div>
+                                <div class="message-content">
+                                    <p>Hello! I am your Second Brain. Ask me questions about your notes, tasks, or log new activities and memories naturally. For example:</p>
+                                    <div class="quick-prompts">
+                                        <button class="quick-prompt-btn" onclick="sendQuickPrompt('spent 350 INR on uber today')">"spent 350 INR on uber today"</button>
+                                        <button class="quick-prompt-btn" onclick="sendQuickPrompt('add a high priority task prepare presentation in project Work')">"add a high priority task prepare presentation..."</button>
+                                        <button class="quick-prompt-btn" onclick="sendQuickPrompt('what did I do this week?')">"what did I do this week?"</button>
+                                        <button class="quick-prompt-btn" onclick="sendQuickPrompt('show open tasks due this week')">"show open tasks due this week"</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-input-area">
+                            <form id="chat-form" onsubmit="handleChatSubmit(event)">
+                                <input type="text" id="chat-input" placeholder="Type a memory to save, a task to create, or ask a question..." autocomplete="off">
+                                <button type="submit" class="chat-send-btn" id="chat-submit-btn">
+                                    <i data-lucide="send"></i>
+                                </button>
+                            </form>
+                            <div class="chat-status" id="chat-status-text">Ready</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Modals & Overlays -->
+
+    <!-- Quick Add Modal -->
+    <div class="modal-overlay" id="quick-add-modal" onclick="closeQuickAddModal(event)">
+        <div class="modal-content glass" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Quick Add</h2>
+                <button class="btn-close" onclick="closeQuickAddModal()"><i data-lucide="x"></i></button>
+            </div>
+            <div class="modal-tabs">
+                <button class="tab-btn active" onclick="switchQuickAddTab('memory')">Memory/Entry</button>
+                <button class="tab-btn" onclick="switchQuickAddTab('task')">Task</button>
+            </div>
+            
+            <!-- Quick Add Memory Form -->
+            <form id="form-quick-add-memory" class="modal-form tab-content active" onsubmit="handleQuickAddMemory(event)">
+                <div class="form-group">
+                    <label for="mem-raw-text">What to remember?</label>
+                    <textarea id="mem-raw-text" class="form-control" rows="3" placeholder="e.g. Paid 649 for Netflix subscription" required></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="mem-type">Type</label>
+                        <select id="mem-type" class="form-control">
+                            <option value="note">Note</option>
+                            <option value="expense">Expense</option>
+                            <option value="link">Link</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="mem-date">Date</label>
+                        <input type="date" id="mem-date" class="form-control">
+                    </div>
+                </div>
+                <!-- Expense Fields (shown dynamically) -->
+                <div id="expense-fields" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="mem-amount">Amount</label>
+                            <input type="number" step="0.01" id="mem-amount" class="form-control" placeholder="0.00">
+                        </div>
+                        <div class="form-group">
+                            <label for="mem-currency">Currency</label>
+                            <input type="text" id="mem-currency" class="form-control" value="INR" placeholder="INR">
+                        </div>
+                        <div class="form-group">
+                            <label for="mem-category">Category</label>
+                            <input type="text" id="mem-category" class="form-control" placeholder="food, subscription, travel">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="mem-tags">Tags (comma-separated)</label>
+                    <input type="text" id="mem-tags" class="form-control" placeholder="personal, work, finance">
+                </div>
+                <button type="submit" class="btn btn-primary w-full">Save Memory</button>
+            </form>
+
+            <!-- Quick Add Task Form -->
+            <form id="form-quick-add-task" class="modal-form tab-content" onsubmit="handleQuickAddTask(event)">
+                <div class="form-group">
+                    <label for="task-title">Task Title</label>
+                    <input type="text" id="task-title" class="form-control" placeholder="What needs to be done?" required>
+                </div>
+                <div class="form-group">
+                    <label for="task-desc">Description</label>
+                    <textarea id="task-desc" class="form-control" rows="2" placeholder="Provide extra details..."></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="task-project">Project</label>
+                        <input type="text" id="task-project" class="form-control" placeholder="e.g. Inbox, Work">
+                    </div>
+                    <div class="form-group">
+                        <label for="task-org">Organization</label>
+                        <input type="text" id="task-org" class="form-control" placeholder="e.g. Personal, Toddle">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="task-priority">Priority</label>
+                        <select id="task-priority" class="form-control">
+                            <option value="">None</option>
+                            <option value="high">High</option>
+                            <option value="medium">Medium</option>
+                            <option value="low">Low</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="task-due">Due Date</label>
+                        <input type="date" id="task-due" class="form-control">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="task-recur-freq">Recurrence Frequency</label>
+                        <select id="task-recur-freq" class="form-control">
+                            <option value="">One-off (None)</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="monthly">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="task-recur-interval">Interval (Every N)</label>
+                        <input type="number" id="task-recur-interval" class="form-control" min="1" value="1">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary w-full">Create Task</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Command Palette (Spotlight Search / Cmd+K) -->
+    <div class="modal-overlay" id="cmd-palette-modal" onclick="closeCommandPalette(event)">
+        <div class="cmd-palette glass" onclick="event.stopPropagation()">
+            <div class="cmd-input-wrapper">
+                <i data-lucide="command" class="cmd-icon"></i>
+                <input type="text" id="cmd-search-input" placeholder="Type a command or quick add in natural language..." onkeydown="handleCommandPaletteKeyDown(event)">
+            </div>
+            <div class="cmd-results" id="cmd-results-list">
+                <!-- Help context shown initially -->
+                <div class="cmd-help">
+                    <div class="cmd-help-title">Natural Language Quick Add examples (Press Enter to execute):</div>
+                    <ul class="cmd-help-list">
+                        <li><span>"netflix subscription 649 INR #finance"</span> - Logs an expense</li>
+                        <li><span>"buy groceries tomorrow #personal"</span> - Creates a task with due date</li>
+                        <li><span>"project Toddle: design database architecture #work"</span> - Adds task in project/org</li>
+                        <li><span>"had a coffee meeting with Sarah today"</span> - Logs a note memory</li>
+                    </ul>
+                    <div class="cmd-help-footer">
+                        <span>Press <kbd>ESC</kbd> to close. AI router agent parses commands automatically.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Project Modal -->
+    <div class="modal-overlay" id="create-project-modal" onclick="closeCreateProjectModal(event)">
+        <div class="modal-content glass modal-small" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>New Project</h2>
+                <button class="btn-close" onclick="closeCreateProjectModal()"><i data-lucide="x"></i></button>
+            </div>
+            <form id="form-create-project" class="modal-form" onsubmit="handleCreateProject(event)">
+                <div class="form-group">
+                    <label for="new-project-name">Project Name</label>
+                    <input type="text" id="new-project-name" class="form-control" placeholder="e.g. Website Overhaul" required>
+                </div>
+                <div class="form-group">
+                    <label for="new-project-org">Organization</label>
+                    <input type="text" id="new-project-org" class="form-control" placeholder="e.g. Personal, Toddle">
+                </div>
+                <button type="submit" class="btn btn-primary w-full">Create Project</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Task Details / Subtasks / Attachments Drawer (Slide over) -->
+    <div class="drawer-overlay" id="task-details-drawer" onclick="closeTaskDetailsDrawer(event)">
+        <div class="drawer glass" onclick="event.stopPropagation()">
+            <div class="drawer-header">
+                <div class="drawer-project-info">
+                    <span id="drawer-task-project">Inbox</span>
+                    <span class="dot"></span>
+                    <span id="drawer-task-org">Personal</span>
+                </div>
+                <button class="btn-close" onclick="closeTaskDetailsDrawer()"><i data-lucide="x"></i></button>
+            </div>
+            <div class="drawer-body">
+                <div class="drawer-section">
+                    <div class="task-status-row">
+                        <select id="drawer-task-status-select" class="status-badge-select" onchange="handleDrawerStatusChange()">
+                            <option value="open">To Do</option>
+                            <option value="in-progress">In Progress</option>
+                            <option value="done">Completed</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
+                        <select id="drawer-task-priority-select" class="priority-badge-select" onchange="handleDrawerPriorityChange()">
+                            <option value="">Priority: None</option>
+                            <option value="high">High</option>
+                            <option value="medium">Medium</option>
+                            <option value="low">Low</option>
+                        </select>
+                    </div>
+                    <h2 class="drawer-task-title" id="drawer-task-title" contenteditable="true" onblur="handleDrawerTitleBlur()">Task Title</h2>
+                    <p class="drawer-task-desc" id="drawer-task-desc" contenteditable="true" onblur="handleDrawerDescBlur()" placeholder="Add a description..."></p>
+                </div>
+
+                <div class="drawer-meta-section">
+                    <div class="meta-row">
+                        <span class="meta-label"><i data-lucide="calendar"></i> Due Date:</span>
+                        <input type="date" id="drawer-task-due" class="meta-value-input" onchange="handleDrawerDueChange()">
+                    </div>
+                    <div class="meta-row" id="drawer-recur-row" style="display: none;">
+                        <span class="meta-label"><i data-lucide="repeat"></i> Recurrence:</span>
+                        <span id="drawer-task-recurrence" class="meta-value-text">Every 1 week</span>
+                    </div>
+                </div>
+
+                <!-- Subtasks Section -->
+                <div class="drawer-section">
+                    <div class="section-title-row">
+                        <h3>Subtasks</h3>
+                        <span class="progress-text" id="drawer-subtask-progress">0/0</span>
+                    </div>
+                    <div class="subtasks-list" id="drawer-subtasks-list">
+                        <!-- Subtasks will be injected here -->
+                    </div>
+                    <form id="add-subtask-form" class="add-subtask-form" onsubmit="handleAddSubtask(event)">
+                        <input type="text" id="new-subtask-title" placeholder="Add a step..." required>
+                        <button type="submit" class="btn-icon"><i data-lucide="plus"></i></button>
+                    </form>
+                </div>
+
+                <!-- Attachments Section -->
+                <div class="drawer-section">
+                    <h3>Attachments</h3>
+                    <div class="attachments-list" id="drawer-attachments-list">
+                        <!-- Attachments injected here -->
+                    </div>
+                    <form id="add-attachment-form" class="add-attachment-form" onsubmit="handleAddAttachment(event)">
+                        <input type="url" id="new-attachment-url" placeholder="Attachment URL (https://...)" required>
+                        <input type="text" id="new-attachment-desc" placeholder="Label/Description (optional)">
+                        <select id="new-attachment-type">
+                            <option value="link">Link</option>
+                            <option value="image">Image</option>
+                            <option value="file">File</option>
+                        </select>
+                        <button type="submit" class="btn btn-secondary"><i data-lucide="plus"></i> Add</button>
+                    </form>
+                </div>
+            </div>
+            <div class="drawer-footer">
+                <button class="btn btn-secondary w-full" id="drawer-complete-btn" onclick="handleDrawerCompleteTask()">
+                    <i data-lucide="check"></i> Mark Complete
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application JavaScript -->
+    <script src="app.js"></script>
+</body>
+</html>

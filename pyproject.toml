@@ -7,6 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "gradio>=6.19.0",
     "openai-agents>=0.17.6",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
 ]
 
 [dependency-groups]
