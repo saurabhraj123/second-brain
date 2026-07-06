@@ -14,9 +14,20 @@ from fastapi.responses import StreamingResponse
 
 import db
 import tasks
-from assistant import make_run_config, new_session_id, router_agent
-from agents import Runner
+from assistant import MODEL, make_run_config, new_session_id, router_agent
+from agents import Agent, Runner
 from openai.types.responses import ResponseTextDeltaEvent
+
+summary_agent = Agent(
+    name="Second Brain Summariser",
+    model=MODEL,
+    instructions=(
+        "You are a helpful assistant. You summarize the user's logged entries, tasks, "
+        "and expenses for a specific period. Provide a cohesive, structured, friendly summary "
+        "in 2-3 short bullet points (using markdown). Focus on major events, project completions, "
+        "and high-level spending trends. Keep it concise. Be direct and avoid generic preamble."
+    )
+)
 
 app = FastAPI(title="Second Brain API")
 
@@ -35,13 +46,21 @@ def startup_event():
     conn = db.connect()
     try:
         db.init_db(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dashboard_summaries (
+                filter TEXT PRIMARY KEY,
+                summary TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
     finally:
         conn.close()
 
 # --- API Endpoints ---
 
 @app.get("/api/dashboard/summary")
-def get_dashboard_summary(filter: str = "weekly"):
+def get_dashboard_summary(filter: str = "weekly", refresh: bool = False):
     conn = db.connect()
     try:
         db.init_db(conn)
@@ -112,6 +131,97 @@ def get_dashboard_summary(filter: str = "weekly"):
         """
         expense_history = [dict(r) for r in conn.execute(chart_query).fetchall()]
         
+        # 7. Check Cache for AI Summary
+        cached_row = conn.execute(
+            "SELECT summary, updated_at FROM dashboard_summaries WHERE filter = ?",
+            (filter,)
+        ).fetchone()
+
+        if refresh or not cached_row:
+            # Collect all entries and tasks within active filter range for AI summariser
+            all_entries_query = f"""
+                SELECT type, raw_text, occurred_at, amount, currency, category
+                FROM entries
+                WHERE {date_filter}
+                ORDER BY occurred_at DESC
+            """
+            duration_entries = conn.execute(all_entries_query).fetchall()
+
+            if filter == "daily":
+                task_filter = """
+                    DATE(completed_at, 'localtime') = DATE('now', 'localtime')
+                    OR due_at = DATE('now', 'localtime')
+                    OR DATE(created_at, 'localtime') = DATE('now', 'localtime')
+                    OR status = 'in-progress'
+                """
+            elif filter == "weekly":
+                task_filter = """
+                    DATE(completed_at, 'localtime') >= DATE('now', 'localtime', '-6 days')
+                    OR due_at >= DATE('now', 'localtime', '-6 days')
+                    OR DATE(created_at, 'localtime') >= DATE('now', 'localtime', '-6 days')
+                    OR status = 'in-progress'
+                """
+            else:
+                task_filter = """
+                    DATE(completed_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
+                    OR due_at >= DATE('now', 'localtime', '-29 days')
+                    OR DATE(created_at, 'localtime') >= DATE('now', 'localtime', '-29 days')
+                    OR status = 'in-progress'
+                """
+
+            tasks_query = f"""
+                SELECT title, status, priority, due_at, completed_at
+                FROM tasks
+                WHERE {task_filter}
+            """
+            duration_tasks = conn.execute(tasks_query).fetchall()
+
+            context_parts = [f"Period: {filter.upper()} (Today is {date.today().isoformat()})\n"]
+            context_parts.append("## Logged Memories & Events:")
+            if not duration_entries:
+                context_parts.append("- No memories logged in this period.")
+            for idx, entry in enumerate(duration_entries):
+                type_str = entry["type"].upper()
+                text = entry["raw_text"]
+                occurred = entry["occurred_at"]
+                amount_str = f" ({entry['amount']} {entry['currency']} in category '{entry['category']}')" if entry["amount"] else ""
+                context_parts.append(f"{idx+1}. [{type_str} | Date: {occurred}] {text}{amount_str}")
+
+            context_parts.append("\n## Tasks Activity:")
+            if not duration_tasks:
+                context_parts.append("- No task activity in this period.")
+            for idx, task in enumerate(duration_tasks):
+                due = f", Due: {task['due_at']}" if task["due_at"] else ""
+                completed = f", Completed: {task['completed_at'][:10]}" if task["completed_at"] else ""
+                priority = f", Priority: {task['priority']}" if task["priority"] else ""
+                context_parts.append(f"{idx+1}. {task['title']} [Status: {task['status']}{priority}{due}{completed}]")
+
+            context_text = "\n".join(context_parts)
+
+            ai_summary = "No insights available."
+            if duration_entries or duration_tasks:
+                try:
+                    result = Runner.run_sync(
+                        summary_agent,
+                        [{"role": "user", "content": context_text}],
+                        run_config=make_run_config()
+                    )
+                    ai_summary = result.final_output or "No insights compiled."
+                except Exception as e:
+                    ai_summary = f"Could not generate AI insights: {e}"
+            else:
+                ai_summary = f"No activities or tasks found for this {filter} period to summarize. Try logging some memories or tasks!"
+                
+            updated_at = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO dashboard_summaries (filter, summary, updated_at) VALUES (?, ?, ?)",
+                (filter, ai_summary, updated_at)
+            )
+            conn.commit()
+        else:
+            ai_summary = cached_row["summary"]
+            updated_at = cached_row["updated_at"]
+
         return {
             "expenses": {
                 "total": total_expense,
@@ -121,7 +231,9 @@ def get_dashboard_summary(filter: str = "weekly"):
             },
             "tasks": task_counts,
             "projects": projects_summary,
-            "recent_activities": entries
+            "recent_activities": entries,
+            "ai_summary": ai_summary,
+            "updated_at": updated_at
         }
     finally:
         conn.close()

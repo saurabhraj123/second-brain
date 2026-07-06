@@ -76,6 +76,25 @@
             <section class="content-body">
                 <!-- Dashboard Panel -->
                 <div id="panel-dashboard" class="content-panel active">
+                    <!-- AI Summary Card -->
+                    <div class="ai-summary-card glass" id="ai-summary-container">
+                        <div class="ai-summary-header-row">
+                            <div class="ai-summary-header">
+                                <i data-lucide="sparkles" class="ai-summary-icon"></i>
+                                <span>AI Insights Summary</span>
+                            </div>
+                            <div class="ai-summary-controls">
+                                <span class="ai-summary-updated" id="ai-summary-updated">Never updated</span>
+                                <button class="btn-icon btn-refresh-ai" onclick="fetchDashboardSummary(true)" title="Regenerate Insights">
+                                    <i data-lucide="refresh-cw" class="icon-refresh-spinner"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="ai-summary-body" id="ai-summary-text">
+                            Analyzing your activities and compiling insights...
+                        </div>
+                    </div>
+
                     <!-- KPI Summary Row -->
                     <div class="kpi-grid">
                         <div class="kpi-card glass">

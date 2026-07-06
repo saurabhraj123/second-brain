@@ -153,12 +153,72 @@ function closeAllModals() {
     closeTaskDetailsDrawer();
 }
 
+// Markdown formatting helper for AI Summary
+function formatMarkdown(text) {
+    if (!text) return "";
+    // Convert bold text **word** to <strong>word</strong>
+    let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    
+    const lines = html.split('\n');
+    let inList = false;
+    let resultLines = [];
+    
+    lines.forEach(line => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+            if (!inList) {
+                resultLines.push('<ul>');
+                inList = true;
+            }
+            resultLines.push(`<li>${trimmed.slice(2)}</li>`);
+        } else {
+            if (inList) {
+                resultLines.push('</ul>');
+                inList = false;
+            }
+            if (trimmed) {
+                resultLines.push(`<p>${trimmed}</p>`);
+            }
+        }
+    });
+    
+    if (inList) {
+        resultLines.push('</ul>');
+    }
+    
+    return resultLines.join('\n');
+}
+
 // --- Dashboard Functions ---
 
-async function fetchDashboardSummary() {
+async function fetchDashboardSummary(forceRefresh = false) {
+    const summaryText = document.getElementById("ai-summary-text");
+    if (summaryText) {
+        summaryText.innerHTML = '<span class="cmd-feedback-spinner" style="display:inline-block; width:12px; height:12px; vertical-align:middle; margin-right:6px;"></span> AI Agent is compiling your insights...';
+    }
+
+    const refreshIcon = document.querySelector(".btn-refresh-ai i");
+    if (refreshIcon) {
+        refreshIcon.classList.add("spinning");
+    }
+
     try {
-        const res = await fetch(`${API_BASE}/api/dashboard/summary?filter=${state.dashboardFilter}`);
+        const res = await fetch(`${API_BASE}/api/dashboard/summary?filter=${state.dashboardFilter}&refresh=${forceRefresh}`);
         const data = await res.json();
+        
+        // Render AI Insights
+        if (summaryText) {
+            summaryText.innerHTML = formatMarkdown(data.ai_summary || "No insights compiled.");
+        }
+
+        // Render Last Updated Timestamp
+        const updatedText = document.getElementById("ai-summary-updated");
+        if (updatedText && data.updated_at) {
+            const d = new Date(data.updated_at);
+            const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const dateStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+            updatedText.textContent = `Last updated: ${dateStr} at ${timeStr}`;
+        }
         
         // Render KPIs
         document.getElementById("kpi-total-tasks").textContent = 
@@ -190,6 +250,13 @@ async function fetchDashboardSummary() {
 
     } catch (err) {
         console.error("Error loading dashboard data:", err);
+        if (summaryText) {
+            summaryText.textContent = "Failed to load AI Insights.";
+        }
+    } finally {
+        if (refreshIcon) {
+            refreshIcon.classList.remove("spinning");
+        }
     }
 }
 
