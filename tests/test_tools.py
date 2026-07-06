@@ -6,7 +6,7 @@ connection must stay usable so the agent can immediately try a fixed query.
 """
 
 import db
-from tools import query_readonly, run_sql
+from tools import _create_project_impl, query_readonly, run_sql
 
 
 def _conn():
@@ -111,3 +111,80 @@ def test_query_readonly_refuses_writes(tmp_path):
 
     assert result["ok"] is False
     assert result["error"]
+
+
+def test_create_project_with_only_project_name(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test_project.db")
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", db_path)
+    original_connect = db.connect
+    monkeypatch.setattr(db, "connect", lambda path=db_path, **kw: original_connect(db_path, **kw))
+
+    import json
+
+    res_str = _create_project_impl(project="widgetised-global-homepage")
+    res = json.loads(res_str)
+
+    assert res["ok"] is True
+    assert res["project"] == "widgetised-global-homepage"
+    assert res["org"] == "Personal"
+
+    # Verify db entry
+    conn = db.connect(db_path)
+    proj = conn.execute(
+        "SELECT * FROM projects WHERE name = ?", ("widgetised-global-homepage",)
+    ).fetchone()
+    assert proj is not None
+    conn.close()
+
+
+def test_create_project_with_org_name(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test_project.db")
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", db_path)
+    original_connect = db.connect
+    monkeypatch.setattr(db, "connect", lambda path=db_path, **kw: original_connect(db_path, **kw))
+
+    import json
+
+    res_str = _create_project_impl(project="widgetised-global-homepage", org="Toddle")
+    res = json.loads(res_str)
+
+    assert res["ok"] is True
+    assert res["project"] == "widgetised-global-homepage"
+    assert res["org"] == "Toddle"
+
+    conn = db.connect(db_path)
+    proj = conn.execute(
+        "SELECT p.name AS project, o.name AS org FROM projects p "
+        "JOIN organizations o ON o.id = p.org_id WHERE p.name = ?",
+        ("widgetised-global-homepage",),
+    ).fetchone()
+    assert proj is not None
+    assert proj["org"] == "Toddle"
+    conn.close()
+
+
+def test_create_project_only_org(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test_project.db")
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", db_path)
+    original_connect = db.connect
+    monkeypatch.setattr(db, "connect", lambda path=db_path, **kw: original_connect(db_path, **kw))
+
+    import json
+
+    res_str = _create_project_impl(org="Toddle")
+    res = json.loads(res_str)
+
+    assert res["ok"] is True
+    assert res["project"] == "Inbox"
+    assert res["org"] == "Toddle"
+
+    conn = db.connect(db_path)
+    proj = conn.execute(
+        "SELECT p.name AS project, o.name AS org FROM projects p "
+        "JOIN organizations o ON o.id = p.org_id WHERE o.name = ?",
+        ("Toddle",),
+    ).fetchone()
+    assert proj is not None
+    assert proj["project"] == "Inbox"
+    conn.close()
+

@@ -150,6 +150,25 @@ def test_get_tasks_filters_by_status(conn):
     assert [t["title"] for t in open_tasks] == ["open one"]
 
 
+def test_get_tasks_searches_title_and_description_by_query(conn):
+    tasks.create_task(conn, title="Submit the tax documents")
+    tasks.create_task(conn, title="Buy groceries", description="milk and tax-free eggs")
+    tasks.create_task(conn, title="Call the dentist")
+
+    # matches the title of one and the description of another
+    found = {t["title"] for t in tasks.get_tasks(conn, query="tax")}
+    assert found == {"Submit the tax documents", "Buy groceries"}
+
+
+def test_get_tasks_query_combines_with_status(conn):
+    open_id = tasks.create_task(conn, title="tax return")
+    done_id = tasks.create_task(conn, title="tax refund")
+    tasks.complete_task(conn, done_id)
+
+    found = tasks.get_tasks(conn, query="tax", status="open")
+    assert [t["id"] for t in found] == [open_id]
+
+
 def test_get_tasks_filters_by_project(conn):
     tasks.create_task(conn, title="inbox task")
     tasks.create_task(conn, title="work task", project="web-app")
@@ -246,6 +265,70 @@ def test_deleting_a_task_cascades_its_attachments(conn):
 def test_get_attachments_empty_when_none(conn):
     task_id = tasks.create_task(conn, title="bare")
     assert tasks.get_attachments(conn, task_id) == []
+
+
+# --- recurrence: completing a recurring task spawns the next occurrence ---
+
+
+def test_next_date_daily_and_weekly():
+    assert tasks._next_date("2026-07-06", "daily", 1) == "2026-07-07"
+    assert tasks._next_date("2026-07-06", "daily", 3) == "2026-07-09"
+    assert tasks._next_date("2026-07-06", "weekly", 1) == "2026-07-13"
+    assert tasks._next_date("2026-07-06", "weekly", 2) == "2026-07-20"
+
+
+def test_next_date_monthly_advances_by_interval():
+    assert tasks._next_date("2026-01-15", "monthly", 1) == "2026-02-15"
+    assert tasks._next_date("2026-01-15", "monthly", 2) == "2026-03-15"
+
+
+def test_next_date_monthly_clamps_to_month_end():
+    # Jan 31 + 1 month has no Feb 31 -> clamp to Feb 28 (2026 is not a leap year)
+    assert tasks._next_date("2026-01-31", "monthly", 1) == "2026-02-28"
+
+
+def test_create_stores_recurrence_rule(conn):
+    task_id = tasks.create_task(
+        conn, title="water plants", recur_freq="weekly", recur_interval=1, due_at="2026-07-06"
+    )
+    t = tasks.get_task(conn, task_id)
+    assert t["recur_freq"] == "weekly"
+    assert t["recur_interval"] == 1
+
+
+def test_completing_recurring_task_spawns_next_instance(conn):
+    task_id = tasks.create_task(
+        conn, title="water plants", recur_freq="weekly", due_at="2026-07-06"
+    )
+
+    next_id = tasks.complete_task(conn, task_id)
+
+    assert tasks.get_task(conn, task_id)["status"] == "done"
+    assert next_id is not None
+    nxt = tasks.get_task(conn, next_id)
+    assert nxt["status"] == "open"
+    assert nxt["title"] == "water plants"
+    assert nxt["due_at"] == "2026-07-13"
+    assert nxt["recur_freq"] == "weekly"
+
+
+def test_completing_recurring_carries_project(conn):
+    task_id = tasks.create_task(
+        conn, title="weekly report", project="Toddle", recur_freq="weekly", due_at="2026-07-06"
+    )
+    nxt = tasks.get_task(conn, tasks.complete_task(conn, task_id))
+    assert nxt["project"] == "Toddle"
+
+
+def test_completing_non_recurring_task_returns_none(conn):
+    task_id = tasks.create_task(conn, title="one-off")
+    assert tasks.complete_task(conn, task_id) is None
+
+
+def test_recurring_without_due_at_just_completes(conn):
+    task_id = tasks.create_task(conn, title="vague recurring", recur_freq="weekly")
+    assert tasks.complete_task(conn, task_id) is None
+    assert tasks.get_task(conn, task_id)["status"] == "done"
 
 
 # --- created_at is a real UTC recording timestamp (like entries) ---

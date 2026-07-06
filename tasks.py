@@ -13,11 +13,13 @@ Writes happen only through the typed functions here (never free-form UPDATE from
 the model); reads reuse the read-only SQL path.
 """
 
-from datetime import datetime, timezone
+import calendar
+from datetime import date, timedelta
 
 DEFAULT_ORG = "Personal"
 DEFAULT_PROJECT = "Inbox"
 TASK_STATUSES = ("open", "in-progress", "done", "cancelled")
+RECUR_FREQS = ("daily", "weekly", "monthly")
 
 TASK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS organizations (
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     parent_id     INTEGER REFERENCES tasks(id),   -- NULL = top-level; set = subtask
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),  -- UTC
     completed_at  TEXT,
+    recur_freq    TEXT,               -- NULL = one-off; else 'daily'|'weekly'|'monthly'
+    recur_interval INTEGER DEFAULT 1, -- every N of that unit (e.g. daily+3 = every 3 days)
     payload       TEXT
 );
 
@@ -65,7 +69,10 @@ CREATE TABLE IF NOT EXISTS attachments (
 """
 
 # Columns a caller may set through update_task (project is resolved separately).
-_UPDATABLE = ("title", "description", "status", "due_at", "priority", "parent_id")
+_UPDATABLE = (
+    "title", "description", "status", "due_at", "priority", "parent_id",
+    "recur_freq", "recur_interval",
+)
 
 
 def init_tasks(conn):
@@ -74,13 +81,28 @@ def init_tasks(conn):
     Idempotent — safe to call on every run.
     """
     conn.executescript(TASK_SCHEMA)
+    _migrate_task_columns(conn)
     conn.executemany(
         "INSERT OR IGNORE INTO task_statuses (name) VALUES (?)",
         [(s,) for s in TASK_STATUSES],
     )
-    org_id = ensure_org(conn, DEFAULT_ORG)
+    ensure_org(conn, DEFAULT_ORG)
     ensure_project(conn, DEFAULT_PROJECT, DEFAULT_ORG)
     conn.commit()
+
+
+def _migrate_task_columns(conn):
+    """Add columns introduced after the tasks table first shipped.
+
+    SQLite's CREATE TABLE IF NOT EXISTS won't alter an existing table, so newer
+    columns (the recurrence rule) are added here with ALTER — cheap and safe for
+    nullable/defaulted columns (no table rebuild needed).
+    """
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(tasks)")]
+    if "recur_freq" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN recur_freq TEXT")
+    if "recur_interval" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN recur_interval INTEGER DEFAULT 1")
 
 
 def get_statuses(conn):
@@ -129,13 +151,20 @@ def create_task(
     priority=None,
     parent_id=None,
     status="open",
+    recur_freq=None,
+    recur_interval=1,
 ):
     """Create a task and return its id.
 
     With no `project`, the task lands in the default Inbox project under the
     default org — so a bare capture still satisfies the task -> project -> org
-    invariant without the caller specifying anything.
+    invariant without the caller specifying anything. Pass `recur_freq`
+    ('daily'/'weekly'/'monthly') + `recur_interval` to make it recurring;
+    completing such a task spawns the next occurrence (see complete_task).
     """
+    if recur_freq is not None and recur_freq not in RECUR_FREQS:
+        raise ValueError(f"recur_freq must be one of {RECUR_FREQS}, got {recur_freq!r}")
+
     if parent_id is not None:
         # A subtask always lives in its parent's project — inherit it.
         parent = get_task(conn, parent_id)
@@ -150,10 +179,11 @@ def create_task(
     cur = conn.execute(
         """
         INSERT INTO tasks (title, description, status, due_at, priority,
-                           project_id, parent_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+                           project_id, parent_id, recur_freq, recur_interval)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (title, description, status, due_at, priority, project_id, parent_id),
+        (title, description, status, due_at, priority, project_id, parent_id,
+         recur_freq, recur_interval),
     )
     conn.commit()
     return cur.lastrowid
@@ -182,14 +212,62 @@ def update_task(conn, task_id, **fields):
     conn.commit()
 
 
+def _add_months(d, n):
+    """Return date `d` advanced by `n` months, clamped to the target month's end."""
+    month_index = d.month - 1 + n
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _next_date(date_str, freq, interval=1):
+    """Advance a 'YYYY-MM-DD[...]' date by one recurrence step; return 'YYYY-MM-DD'."""
+    d = date.fromisoformat(date_str[:10])
+    if freq == "daily":
+        d = d + timedelta(days=interval)
+    elif freq == "weekly":
+        d = d + timedelta(weeks=interval)
+    elif freq == "monthly":
+        d = _add_months(d, interval)
+    else:
+        raise ValueError(f"unknown recurrence freq: {freq}")
+    return d.isoformat()
+
+
 def complete_task(conn, task_id):
-    """Mark a task done and stamp completed_at (UTC)."""
+    """Mark a task done (stamping completed_at, UTC).
+
+    If the task is recurring and has a due date, spawn the next occurrence (same
+    title/project/priority/rule, with the next due date) and return its id.
+    Otherwise return None.
+    """
+    t = get_task(conn, task_id)
+    if t is None:
+        return None
+
     conn.execute(
         "UPDATE tasks SET status = 'done', "
         "completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
         (task_id,),
     )
+
+    next_id = None
+    if t["recur_freq"] and t["due_at"]:
+        next_due = _next_date(t["due_at"], t["recur_freq"], t["recur_interval"] or 1)
+        cur = conn.execute(
+            """
+            INSERT INTO tasks (title, description, status, due_at, priority,
+                               project_id, recur_freq, recur_interval)
+            VALUES (?, ?, 'open', ?, ?, ?, ?, ?)
+            """,
+            (t["title"], t["description"], next_due, t["priority"],
+             t["project_id"], t["recur_freq"], t["recur_interval"]),
+        )
+        next_id = cur.lastrowid
+
     conn.commit()
+    return next_id
 
 
 def _row_to_task(row):
@@ -257,8 +335,9 @@ def get_attachments(conn, task_id):
     ]
 
 
-def get_tasks(conn, *, status=None, project=None):
-    """Return tasks (newest first), optionally filtered by status and/or project name."""
+def get_tasks(conn, *, status=None, project=None, query=None):
+    """Return tasks (newest first), filtered by status, project, and/or a free-text
+    `query` matched against the title and description."""
     where, params = [], []
     if status is not None:
         where.append("t.status = ?")
@@ -266,6 +345,9 @@ def get_tasks(conn, *, status=None, project=None):
     if project is not None:
         where.append("p.name = ?")
         params.append(project)
+    if query:
+        where.append("(t.title LIKE ? OR t.description LIKE ?)")
+        params += [f"%{query}%", f"%{query}%"]
 
     sql = _SELECT
     if where:

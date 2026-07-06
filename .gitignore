@@ -12,10 +12,11 @@ wheels/
 # Secrets
 .env
 
-# Local database
+# Local database (and pre-migration backups)
 *.db
 *.db-journal
 *.db-wal
+*.bak
 
 # Personal standing instructions (agent-mutated)
 memory.md

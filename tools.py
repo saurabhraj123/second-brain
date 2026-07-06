@@ -176,14 +176,18 @@ def create_task(
     due_at: str = "",
     priority: str = "",
     parent_task_id: int = 0,
+    recur_freq: str = "",
+    recur_interval: int = 1,
 ) -> str:
     """Create a task/to-do and return it as JSON.
 
     Only `title` is required. Omit `project`/`org` to file it in the default
     Inbox under Personal. `due_at` is the local day/time it's due ('YYYY-MM-DD'
     or a full timestamp). Pass `parent_task_id` to make it a SUBTASK of that task
-    (it inherits the parent's project; `project`/`org` are ignored). Returns
-    {"ok": true, "task": {...}}.
+    (it inherits the parent's project; `project`/`org` are ignored). For a
+    RECURRING task set `recur_freq` to 'daily'/'weekly'/'monthly' and
+    `recur_interval` to N (e.g. daily+3 = every 3 days) — and set `due_at` to the
+    first occurrence. Returns {"ok": true, "task": {...}}.
     """
     def op(conn):
         task_id = tasks.create_task(
@@ -195,6 +199,8 @@ def create_task(
             due_at=due_at or None,
             priority=priority or None,
             parent_id=parent_task_id or None,
+            recur_freq=recur_freq or None,
+            recur_interval=recur_interval,
         )
         return {"ok": True, "task": tasks.get_task(conn, task_id)}
 
@@ -237,6 +243,33 @@ def update_task(
 
 
 @function_tool
+def find_tasks(query: str = "", status: str = "") -> str:
+    """Look up tasks by keywords in their title/description to get their ids —
+    call this to RESOLVE a task the user names ("mark the tax report done")
+    before update_task / complete_task, instead of asking the user for an id.
+    `status` optionally narrows (e.g. 'open'). Returns
+    {"ok": true, "tasks": [{"id","title","status","due_at","project"}, ...]}.
+    """
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+        rows = tasks.get_tasks(conn, query=query or None, status=status or None)
+        slim = [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "status": r["status"],
+                "due_at": r["due_at"],
+                "project": r["project"],
+            }
+            for r in rows
+        ]
+        return json.dumps({"ok": True, "tasks": slim})
+    finally:
+        conn.close()
+
+
+@function_tool
 def complete_task(task_id: int) -> str:
     """Mark a task done (sets status='done' and stamps completed_at). Returns
     {"ok": true, "task": {...}}.
@@ -244,8 +277,11 @@ def complete_task(task_id: int) -> str:
     def op(conn):
         if tasks.get_task(conn, task_id) is None:
             return {"ok": False, "error": f"no task with id {task_id}"}
-        tasks.complete_task(conn, task_id)
-        return {"ok": True, "task": tasks.get_task(conn, task_id)}
+        next_id = tasks.complete_task(conn, task_id)
+        result = {"ok": True, "task": tasks.get_task(conn, task_id)}
+        if next_id is not None:  # a recurring task spawned its next occurrence
+            result["next_occurrence"] = tasks.get_task(conn, next_id)
+        return result
 
     return json.dumps(_task_write(op))
 
@@ -270,3 +306,36 @@ def add_attachment(
         }
 
     return json.dumps(_task_write(op))
+
+
+def _create_project_impl(project: str = "", org: str = "") -> str:
+    """Underlying implementation for create_project tool."""
+    if not project and not org:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "Must specify at least a project name or organization name",
+            }
+        )
+
+    def op(conn):
+        proj_name = project or tasks.DEFAULT_PROJECT
+        org_name = org or tasks.DEFAULT_ORG
+        tasks.ensure_project(conn, proj_name, org_name)
+        conn.commit()
+        return {"ok": True, "project": proj_name, "org": org_name}
+
+    return json.dumps(_task_write(op))
+
+
+@function_tool
+def create_project(project: str = "", org: str = "") -> str:
+    """Create a project and/or organization in the task subsystem.
+
+    If `project` is empty but `org` is specified, it ensures the organization is created
+    and creates a default 'Inbox' project under it.
+    If `org` is omitted, the project is created under the 'Personal' organization.
+    Returns JSON: {"ok": true, "project": project, "org": org}.
+    """
+    return _create_project_impl(project, org)
+

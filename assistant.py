@@ -29,8 +29,10 @@ from tools import (
     TASK_SCHEMA_DOC,
     add_attachment,
     complete_task,
+    create_project,
     create_task,
     execute_sql,
+    find_tasks,
     query_db,
     update_task,
 )
@@ -192,12 +194,20 @@ def _task_instructions(ctx, agent):
     statuses, projects = current_task_context()
     return _with_prefs(
         f"Today is {today}.\n\n"
-        "You manage the user's tasks/to-dos with the create_task, update_task, "
-        "and complete_task tools. Each returns JSON; if it comes back "
+        "You manage the user's tasks/to-dos/projects with the create_task, update_task, "
+        "complete_task, and create_project tools. Each returns JSON; if it comes back "
         '{"ok": false, ...} read the error and try again.\n\n'
         f"Statuses: {', '.join(statuses)}.\n"
         f"Existing projects: {', '.join(projects) if projects else '(only the default Inbox)'}.\n\n"
         "Rules:\n"
+        "- CREATE PROJECT: if the user specifically requests to create a project or organization "
+        "(without immediately creating a task, or as a placeholder), call the `create_project` "
+        "tool. If they ask to create a project but do not specify an organization, first try to "
+        "infer the correct organization from the context (e.g. existing orgs, matching name "
+        "characteristics, or previous context). If it is completely ambiguous and does not clearly "
+        "belong to 'Personal' or any existing organization, ask a short follow-up question (e.g., "
+        "'Which organization should the X project belong to?') instead of creating it in Personal. "
+        "If they only ask to create an organization, leave `project` empty and specify `org`.\n"
         "- CREATE: call create_task with a concise `title` (and `description` for "
         "any extra detail). Set `due_at` to the LOCAL day/time when the user gives "
         "one ('YYYY-MM-DD', or a full timestamp if they mention a time).\n"
@@ -214,10 +224,15 @@ def _task_instructions(ctx, agent):
         "to…') but gives NO date/time, DO ask one short follow-up: 'when should I "
         "remind you?' — a reminder without a time can't function. (A plain to-do "
         "with no date is fine; just create it.)\n"
-        "- UPDATE / COMPLETE: to change or finish a task you need its id. If you "
-        "don't have it, you won't be able to look it up here — ask the user to "
-        "clarify which task, or note that recall can find it. Use complete_task to "
-        "mark done, update_task to change status/due/priority/project/title.\n"
+        "- UPDATE / COMPLETE: complete_task marks a task done; update_task changes "
+        "status/due/priority/project/title. Both take the task's id. When the user "
+        "names a task instead of giving an id ('mark the tax report done', 'move "
+        "the login task to next week'), DO NOT ask for an id — call find_tasks with "
+        "keywords from what they said to look it up yourself, then act on the "
+        "match. If exactly one task matches (prefer open/in-progress ones), just do "
+        "it. Only ask the user to clarify if SEVERAL plausibly match, or say you "
+        "can't find it if NONE do. If the id is already clear from the recent "
+        "conversation, use that directly.\n"
         "- ATTACH: to add an image/link/file to a task, call add_attachment with "
         "the task's id and the URL (set `type` to 'image', 'link', or 'file'; "
         "'link' is the default). This is for material tied to a task — a standalone "
@@ -225,6 +240,13 @@ def _task_instructions(ctx, agent):
         "- SUBTASK: to break a task into steps, create each step with "
         "`parent_task_id` set to the parent's id (you'll need that id — recall can "
         "find it). A subtask inherits its parent's project automatically.\n"
+        "- RECURRING: if the user wants it repeated ('every day', 'every Monday', "
+        "'weekly', 'every 2 weeks', 'monthly', 'every 3 days'), set `recur_freq` to "
+        "'daily'/'weekly'/'monthly' and `recur_interval` to N (every-3-days = "
+        "daily+3, every-2-weeks = weekly+2), AND set `due_at` to the first "
+        "occurrence's date (compute it, e.g. the next Monday). Completing a "
+        "recurring task automatically creates the next one — when you complete one "
+        "and the result includes a next_occurrence, tell the user its due date.\n"
         "- If create_task reports a NEW project was created, mention it so the user "
         "knows.\n"
         "- ALWAYS include the task's id in your confirmation, e.g. \"Added task #6: "
@@ -239,7 +261,14 @@ task_agent = Agent(
     name="Task Manager",
     model=MODEL,
     instructions=_task_instructions,
-    tools=[create_task, update_task, complete_task, add_attachment],
+    tools=[
+        create_task,
+        find_tasks,
+        update_task,
+        complete_task,
+        add_attachment,
+        create_project,
+    ],
 )
 
 
@@ -262,15 +291,14 @@ def _router_instructions(ctx, agent):
         "`store_memory` with the full detail, then confirm warmly in one line. If "
         "store_memory reports it started a NEW category, mention that in your "
         "confirmation so the user knows a new type was created.\n"
-        "- TASK: the user wants to create, update, or finish an actionable to-do "
-        "or reminder — something to DO, often with a due date ('remind me to…', "
-        "'add a task…', 'I need to…', 'mark X done', 'move X to the Y project'). "
-        "This is different from STORE: a task is an action to track and complete, "
-        "not a fact to remember. Call `manage_task` with the full detail (what to "
-        "do, any due date, any project) — and when the user refers to an earlier "
-        "task ('it', 'that task'), pass along its id from the recent conversation. "
-        "Relay manage_task's confirmation, KEEPING any task id it reports (the user "
-        "needs it to refer back).\n"
+        "- TASK: the user wants to manage tasks, projects, or organizations — "
+        "including creating, updating, completing, or attaching files to a task, "
+        "or creating a new project or organization ('create project Y under Toddle', "
+        "'create organization Z', 'add a task…', 'mark X done'). Call `manage_task` "
+        "with the full detail (what to do, any due date, any project/org) — and when "
+        "the user refers to an earlier task ('it', 'that task'), pass along its id "
+        "from the recent conversation. Relay manage_task's confirmation, KEEPING "
+        "any task id it reports (the user needs it to refer back).\n"
         "- RECALL: the user is asking about their own past or stored data, OR "
         "asking to LIST/look-up tasks ('show my open tasks', 'what's due today', "
         "'what's in the web-app project'). Task reads go through recall too. Call "
@@ -316,10 +344,10 @@ router_agent = Agent(
         task_agent.as_tool(
             tool_name="manage_task",
             tool_description=(
-                "Create, update, or complete an actionable to-do / reminder. Pass "
-                "the full detail — what to do, any due date, and any project/org "
-                "it belongs to. Use for 'remind me to…', 'add a task…', 'mark X "
-                "done', 'move X to project Y'."
+                "Create, update, or complete an actionable to-do / reminder, or create/manage "
+                "projects and organizations. Pass the full detail — what to do, any due date, "
+                "and any project/org name. Use for 'remind me to…', 'add a task…', 'mark X "
+                "done', 'create project Y', 'create organization Z'."
             ),
         ),
         recall_agent.as_tool(
